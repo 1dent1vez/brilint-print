@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es-MX">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#030407">
+<meta name="description" content="Sube tus archivos y conoce el total exacto antes de llegar al mostrador. Copias e impresiones en Print with Brilint.">
+<title>Sube tus archivos · Print with Brilint</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/bebas-neue-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/manrope-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+<script src="/vendor/pdf-lib.min.js" defer></script>
+<script src="/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#subida">Ir a la subida de archivos</a>
+
+<main class="page">
+
+  <!-- ============ 1 · FORMULARIO ============ -->
+  <div id="step-form">
+
+    <header class="masthead">
+      <span class="rule" aria-hidden="true"></span>
+      <h1>Sube tus<br>archivos</h1>
+      <p class="lead">Elige, marca si va en color o blanco y negro, y te damos el total exacto antes de que vengas.</p>
+    </header>
+
+    <section class="block" id="subida">
+      <div class="block-head">
+        <h2>Archivos</h2>
+        <span class="count" id="filecount" aria-live="polite">0</span>
+      </div>
+
+      <label class="window" id="drop" for="file">
+        <span class="module" id="module" aria-hidden="true"></span>
+        <span class="win-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square">
+            <path d="M12 16V4M12 4L7 9M12 4l5 5"/><path d="M4 15v4h16v-4"/>
+          </svg>
+        </span>
+        <span class="win-title">Toca para elegir archivos</span>
+        <span class="win-sub">PDF, JPG o PNG · hasta <span id="maxmb">80</span> MB en total</span>
+        <input id="file" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden>
+      </label>
+
+      <ul class="files" id="filelist"></ul>
+      <p class="empty" id="empty">Aún no hay archivos. Puedes subir varios a la vez.</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h2>Cómo lo quieres</h2></div>
+      <fieldset class="mode" id="mode">
+        <legend class="sr">Modo de impresión</legend>
+        <label class="opt">
+          <input type="radio" name="mode" value="bw" checked>
+          <span class="opt-body">
+            <span class="opt-name">Blanco y negro</span>
+            <span class="opt-rate">desde <b id="rate-bw">—</b> por página</span>
+          </span>
+          <span class="tick" aria-hidden="true"></span>
+        </label>
+        <label class="opt">
+          <input type="radio" name="mode" value="color">
+          <span class="opt-body">
+            <span class="opt-name">Color</span>
+            <span class="opt-rate">desde <b id="rate-color">—</b> por página</span>
+          </span>
+          <span class="tick" aria-hidden="true"></span>
+        </label>
+      </fieldset>
+      <p class="help">El precio por página depende de la tinta de cada hoja. La medimos nosotros: no tienes que elegir nivel.</p>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h2>Copias y notas</h2></div>
+
+      <div class="field">
+        <label class="lab" for="copies">Copias de cada archivo</label>
+        <div class="stepper">
+          <button type="button" class="step-btn" id="copies-minus" aria-label="Quitar una copia">−</button>
+          <input id="copies" type="number" inputmode="numeric" min="1" max="200" value="1">
+          <button type="button" class="step-btn" id="copies-plus" aria-label="Agregar una copia">+</button>
+        </div>
+        <p class="help">Si quieres 3 juegos del mismo archivo, pon 3.</p>
+      </div>
+
+      <div class="field">
+        <label class="check" for="needsNotes">
+          <input id="needsNotes" type="checkbox">
+          <span class="box" aria-hidden="true"></span>
+          <span class="check-text">Necesito indicaciones especiales</span>
+        </label>
+        <p class="help">Si lo activas, tu pedido no se imprime solo: lo reviso en el mostrador antes de que salga.</p>
+        <div id="notes-wrap" hidden>
+          <label class="lab" for="notes">¿Qué necesitas?</label>
+          <textarea id="notes" rows="3" maxlength="400" placeholder="La imagen de 10 × 10 cm, el PDF por ambos lados, solo las páginas 2 y 3…"></textarea>
+        </div>
+      </div>
+    </section>
+
+    <button id="send" class="cta" disabled>Enviar y cotizar</button>
+    <p class="err" id="err" role="alert"></p>
+
+    <ol class="steps">
+      <li><span>1</span>Sube tus archivos</li>
+      <li><span>2</span>Recibes el total exacto y confirmas</li>
+      <li><span>3</span>Llegas, das tu folio, pagas y te llevas tus copias</li>
+    </ol>
+  </div>
+
+  <!-- ============ 2 · SUBIENDO ============ -->
+  <div id="step-send" hidden>
+    <header class="masthead">
+      <span class="rule" aria-hidden="true"></span>
+      <h1>Subiendo</h1>
+      <p class="lead" id="send-sub">No cierres esta página.</p>
+    </header>
+    <div class="bar" role="progressbar" aria-label="Progreso de la subida" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar"><i id="bar-fill"></i></div>
+    <p class="fine" id="send-meta">&nbsp;</p>
+  </div>
+
+  <!-- ============ 3 · COTIZANDO ============ -->
+  <div id="step-quote" hidden>
+    <header class="masthead">
+      <span class="rule" aria-hidden="true"></span>
+      <h1 id="quote-title">Cotizando</h1>
+      <p class="lead" id="quote-sub">Estamos midiendo la tinta de cada página.</p>
+    </header>
+
+    <div class="measuring" id="measuring">
+      <span class="spinner" aria-hidden="true"></span>
+      <span>Tarda unos segundos. No cierres esta página.</span>
+    </div>
+
+    <div id="quote-ticket" hidden>
+      <div class="ticket total-ticket">
+        <p class="label">Total exacto</p>
+        <p class="total-big" id="q-total">—</p>
+        <ul class="q-lines" id="q-lines"></ul>
+        <dl class="q-meta" id="q-meta"></dl>
+      </div>
+      <button class="cta" id="confirm">Confirmar e imprimir</button>
+      <p class="err" id="quote-err" role="alert"></p>
+      <p class="fine">El cobro es en el mostrador al recoger.</p>
+    </div>
+
+    <p class="err" id="quote-wait" role="alert" hidden></p>
+  </div>
+
+  <!-- ============ 4 · FOLIO ============ -->
+  <div id="step-done" hidden>
+    <header class="masthead">
+      <span class="rule" aria-hidden="true"></span>
+      <h1>Tu folio</h1>
+    </header>
+
+    <div class="ticket">
+      <p class="folio" id="folio">—</p>
+      <div class="status" id="status"><span class="dot" aria-hidden="true"></span><span id="status-text">En fila</span></div>
+      <dl class="resume" id="resume"></dl>
+    </div>
+
+    <p class="lead small">Guarda este folio y dalo en el mostrador. Si dejaste tu WhatsApp, te avisamos cuando esté listo.</p>
+    <button class="cta ghost" id="again">Subir otro pedido</button>
+  </div>
+
+</main>
+
+<footer class="foot">
+  <p>Print with Brilint · Copias e impresiones</p>
+</footer>
+</body>
+</html>
