@@ -15,7 +15,9 @@ export async function onRequestPost({ request, env }) {
   const to = stage === "review" ? "reviewing" : stage === "quote" ? "measuring" : "printing";
 
   // Recuperación: si la laptop murió a media medición o impresión, el pedido
-  // volvería a quedar atorado para siempre. Se devuelve a la cola.
+  // volvería a quedar atorado para siempre.
+  // Ojo con la impresión: si ya se mandó papel (attempts > 0), NO se reimprime
+  // solo — saldría hoja doble. Se deja en error para que el mostrador decida.
   const now = new Date().toISOString();
   const staleMeasure = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   const stalePrint = new Date(Date.now() - 30 * 60 * 1000).toISOString();
@@ -24,7 +26,16 @@ export async function onRequestPost({ request, env }) {
       WHERE status = 'measuring' AND claimed_at IS NOT NULL AND claimed_at < ?`
   ).bind(staleMeasure).run();
   await env.DB.prepare(
-    `UPDATE jobs SET status = 'queued', claimed_at = NULL
+    `UPDATE jobs SET status = 'review', claimed_at = NULL
+      WHERE status = 'reviewing' AND claimed_at IS NOT NULL AND claimed_at < ?`
+  ).bind(staleMeasure).run();
+  await env.DB.prepare(
+    `UPDATE jobs
+        SET status = CASE WHEN attempts > 0 THEN 'error' ELSE 'queued' END,
+            claimed_at = NULL,
+            error = CASE WHEN attempts > 0
+                         THEN 'se mandó a la impresora y no hubo confirmación: revisa si salió'
+                         ELSE NULL END
       WHERE status = 'printing' AND claimed_at IS NOT NULL AND claimed_at < ?`
   ).bind(stalePrint).run();
 

@@ -9,7 +9,8 @@ export async function onRequestGet({ request, env }) {
 
   const res = await env.DB.prepare(
     `SELECT folio, created_at, status, mode, copies, pages, pages_verified, total,
-            notes, review, quote_json, printed_at
+            notes, review, quote_json, printed_at, printed_by, error, attempts,
+            claimed_at, attempted_at
        FROM jobs
       ORDER BY created_at DESC
       LIMIT ?`
@@ -27,6 +28,11 @@ export async function onRequestGet({ request, env }) {
     review: r.review || 0,
     quote: r.quote_json ? JSON.parse(r.quote_json) : null,
     printed_at: r.printed_at,
+    printed_by: r.printed_by || null,
+    error: r.error || null,
+    attempts: r.attempts || 0,
+    claimed_at: r.claimed_at || null,
+    attempted_at: r.attempted_at || null,
   }));
 
   return json({ jobs });

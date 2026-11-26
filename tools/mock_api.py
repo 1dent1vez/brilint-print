@@ -129,6 +129,17 @@ class Handler(BaseHTTPRequestHandler):
                                    ("folio", "created_at", "status", "mode", "copies",
                                     "pages", "pages_verified", "total", "printed_at", "quote")})
 
+        if path == "/api/agent/jobs":
+            if not self.agent_ok():
+                return self.send_json({"error": "No autorizado."}, 401)
+            db = load_db()
+            jobs = [{k: j.get(k) for k in ("folio", "created_at", "status", "mode", "copies",
+                                           "pages", "pages_verified", "total", "notes", "review",
+                                           "quote", "printed_at", "printed_by", "error",
+                                           "attempts", "claimed_at", "attempted_at")}
+                    for j in sorted(db["jobs"], key=lambda x: x["created_at"], reverse=True)]
+            return self.send_json({"jobs": jobs})
+
         if path == "/api/agent/file":
             if not self.agent_ok():
                 return self.send_json({"error": "No autorizado."}, 401)
@@ -166,7 +177,8 @@ class Handler(BaseHTTPRequestHandler):
                 stage = (json.loads(body or b"{}") or {}).get("stage", "print")
             except json.JSONDecodeError:
                 stage = "print"
-            from_status, to_status = ("quoting", "measuring") if stage == "quote" else ("queued", "printing")
+            from_status, to_status = {"quote": ("quoting", "measuring"),
+                                      "review": ("review", "reviewing")}.get(stage, ("queued", "printing"))
             db = load_db()
             job = next((j for j in db["jobs"] if j["status"] == from_status), None)
             if not job:
@@ -176,8 +188,10 @@ class Handler(BaseHTTPRequestHandler):
             save_db(db)
             return self.send_json({"stage": stage, "job": {k: job[k] for k in
                                            ("folio", "created_at", "mode", "copies", "pages",
-                                            "total", "customer", "phone", "notes")}
-                                   | {"files": [{"index": i, **{kk: f[kk] for kk in ("name", "pages", "size", "type")}}
+                                            "total", "customer", "phone", "notes")
+                                            if k in job}
+                                   | {"review": job.get("review", 0),
+                                      "files": [{"index": i, **{kk: f[kk] for kk in ("name", "pages", "size", "type")}}
                                                 for i, f in enumerate(job["files"])]}})
         if u.path == "/api/agent/quote":
             if not self.agent_ok():
@@ -218,6 +232,49 @@ class Handler(BaseHTTPRequestHandler):
                 job["status"] = "queued"
                 save_db(db)
             return self.send_json({"folio": job["folio"], "status": job["status"], "total": job["total"]})
+        if u.path == "/api/agent/release":
+            if not self.agent_ok():
+                return self.send_json({"error": "No autorizado."}, 401)
+            payload = json.loads(body or b"{}")
+            db = load_db()
+            job = next((j for j in db["jobs"] if j["folio"] == payload.get("folio")), None)
+            if not job:
+                return self.send_json({"error": "No encontramos ese folio."}, 404)
+            if job["status"] not in ("review", "reviewing"):
+                return self.send_json({"error": f"El pedido está en estado {job['status']}."}, 409)
+            job["status"] = "quoting"
+            job["claimed_at"] = None
+            save_db(db)
+            return self.send_json({"ok": True, "folio": job["folio"], "status": "quoting"})
+        if u.path == "/api/agent/manual":
+            if not self.agent_ok():
+                return self.send_json({"error": "No autorizado."}, 401)
+            payload = json.loads(body or b"{}")
+            db = load_db()
+            job = next((j for j in db["jobs"] if j["folio"] == payload.get("folio")), None)
+            if not job:
+                return self.send_json({"error": "No encontramos ese folio."}, 404)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            action = payload.get("action")
+            if action == "printed_here":
+                job["status"] = "done"
+                job["printed_at"] = job.get("printed_at") or now
+                job["printed_by"] = "mostrador"
+                job["claimed_at"] = None
+                job["error"] = None
+                save_db(db)
+                return self.send_json({"ok": True, "folio": job["folio"], "status": "done"})
+            if action == "requeue":
+                if job["status"] not in ("error", "queued", "printing"):
+                    return self.send_json({"error": f"No hace falta reimprimir: {job['status']}."}, 409)
+                job["status"] = "queued"
+                job["claimed_at"] = None
+                job["attempts"] = 0
+                job["error"] = None
+                job["printed_at"] = None
+                save_db(db)
+                return self.send_json({"ok": True, "folio": job["folio"], "status": "queued"})
+            return self.send_json({"error": "acción desconocida"}, 400)
         if u.path == "/api/agent/ack":
             if not self.agent_ok():
                 return self.send_json({"error": "No autorizado."}, 401)
@@ -226,12 +283,31 @@ class Handler(BaseHTTPRequestHandler):
             job = next((j for j in db["jobs"] if j["folio"] == payload.get("folio")), None)
             if not job:
                 return self.send_json({"error": "Pedido no encontrado."}, 404)
-            job["status"] = payload.get("status")
-            job["pages_verified"] = payload.get("pages_verified")
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            status = payload.get("status")
+            if status == "sent":
+                if job["status"] != "printing":
+                    return self.send_json({"ok": True, "print": False, "folio": job["folio"],
+                                           "status": job["status"],
+                                           "reason": f"el pedido está en {job['status']}"})
+                job["attempts"] = job.get("attempts", 0) + 1
+                job["attempted_at"] = now
+                save_db(db)
+                return self.send_json({"ok": True, "print": True, "folio": job["folio"],
+                                       "status": "printing"})
+            if job["status"] not in ("printing", "queued"):
+                save_db(db)
+                return self.send_json({"ok": True, "already": True, "folio": job["folio"],
+                                       "status": job["status"]})
+            job["status"] = status
+            job["pages_verified"] = payload.get("pages_verified") or job.get("pages_verified")
             job["error"] = payload.get("error")
-            job["printed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            job["claimed_at"] = None
+            if status == "done":
+                job["printed_at"] = now
+                job["printed_by"] = job.get("printed_by") or "agente"
             save_db(db)
-            return self.send_json({"ok": True})
+            return self.send_json({"ok": True, "folio": job["folio"], "status": status})
         return self.send_json({"error": "ruta desconocida"}, 404)
 
     def create_job(self, body: bytes):
@@ -277,12 +353,15 @@ class Handler(BaseHTTPRequestHandler):
         db["jobs"].append({
             "folio": folio,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "status": "quoting", "mode": mode, "copies": copies,
+            "status": "review" if (fields.get("review") == "1" and len(fields.get("notes", "")) >= 4) else "quoting",
+            "mode": mode, "copies": copies,
             "pages": total_pages, "pages_verified": None,
             "total": 0, "quote": None,
             "customer": fields.get("customer", ""), "phone": fields.get("phone", ""),
             "notes": fields.get("notes", ""), "files": stored,
-            "claimed_at": None, "printed_at": None, "error": None,
+            "review": 1 if (fields.get("review") == "1" and len(fields.get("notes", "")) >= 4) else 0,
+            "claimed_at": None, "printed_at": None, "printed_by": None, "error": None,
+            "attempts": 0, "attempted_at": None,
         })
         save_db(db)
         return self.send_json({

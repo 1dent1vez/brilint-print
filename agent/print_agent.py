@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +32,10 @@ REVIEW_HOME = Path.home() / "Desktop" / "Impresiones"
 
 PAPERS = {"letter": ("letter", 612, 792), "a4": ("a4", 595, 842)}
 
+# CUPS responde en el idioma del sistema: se pide inglés para poder leer el
+# estado de la cola sin depender de traducciones.
+CUPS_ENV = {"LC_ALL": "C", "LANG": "C"}
+
 
 # --------------------------------------------------------------------------- #
 # utilidades
@@ -45,7 +51,8 @@ def log(msg: str) -> None:
 
 
 def run(cmd: list[str], timeout: int = 600) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          env={**os.environ, **CUPS_ENV})
 
 
 class Agent:
@@ -97,13 +104,29 @@ class Agent:
         return self._req("/api/agent/release", method="POST",
                          body={"folio": folio}, timeout=60)
 
-    def ack(self, folio: str, status: str, pages: int | None = None, error: str | None = None) -> None:
+    def ack(self, folio: str, status: str, pages: int | None = None, error: str | None = None) -> dict:
         if self.dry_run:
             log(f"  (dry-run) no se reporta {folio} como {status}")
-            return
-        self._req("/api/agent/ack", method="POST",
-                  body={"folio": folio, "status": status,
-                        "pages_verified": pages, "error": error})
+            return {}
+        res = self._req("/api/agent/ack", method="POST",
+                        body={"folio": folio, "status": status,
+                              "pages_verified": pages, "error": error})
+        return res if isinstance(res, dict) else {}
+
+    def mark_sent(self, folio: str) -> bool:
+        """Registra el intento antes de mandar papel. El servidor puede vetarlo:
+        si el mostrador ya cerró el pedido (lo imprimió a mano), no se imprime."""
+        if self.dry_run:
+            return True
+        try:
+            res = self.ack(folio, "sent")
+        except urllib.error.HTTPError as exc:
+            log(f"  ! no pude registrar el intento de {folio} (HTTP {exc.code}); sigo")
+            return True
+        if res.get("print") is False:
+            log(f"  ⤷ {folio}: el servidor no autoriza imprimir ({res.get('reason', 'cerrado')})")
+            return False
+        return True
 
     # -------- archivos -------- #
     def download(self, folio: str, f: dict, dest: Path) -> Path:
@@ -218,43 +241,172 @@ class Agent:
             return None
         return dst
 
+    # -------- cola de impresión -------- #
+    def queue(self) -> dict[str, str]:
+        """Trabajos pendientes SOLO de esta impresora: {id: texto de estado}.
+
+        Se pide con `-l` porque ahí CUPS dice si el trabajo está en pausa
+        (`Alerts: job-hold-until-specified`), que es justo lo que deja la cola
+        muda cuando alguien lo detuvo a mano."""
+        out = run(["lpstat", "-l", "-W", "not-completed", "-o", self.printer], timeout=30)
+        jobs: dict[str, str] = {}
+        actual = None
+        for line in (out.stdout or "").splitlines():
+            if not line.strip():
+                continue
+            if line[0] in "\t " and actual:
+                jobs[actual] = jobs[actual] + " " + line.strip()
+                continue
+            parts = line.split()
+            if parts and parts[0].startswith(self.printer + "-"):
+                actual = parts[0]
+                jobs[actual] = line.strip()
+        return jobs
+
+    def completed(self) -> set[str]:
+        """Trabajos que ya salieron de la cola (histórico de CUPS)."""
+        out = run(["lpstat", "-W", "completed", "-o", self.printer], timeout=30)
+        return {ln.split()[0] for ln in (out.stdout or "").splitlines() if ln.split()}
+
+    def printer_state(self) -> dict:
+        """Estado de la cola según CUPS: habilitada, aceptando y el motivo."""
+        out = (run(["lpstat", "-p", self.printer], timeout=30).stdout or "").strip()
+        flat = " ".join(out.split())
+        state = {"line": flat, "exists": bool(flat), "enabled": True, "reason": ""}
+        low = flat.lower()
+        if "disabled" in low:
+            state["enabled"] = False
+            state["reason"] = flat.split(" - ", 1)[1] if " - " in flat else "sin razón reportada"
+        elif "deshabilitada" in low:  # por si el idioma no respeta LC_ALL
+            state["enabled"] = False
+            state["reason"] = flat.split(" - ", 1)[1] if " - " in flat else "sin razón reportada"
+        if "not accepting" in low or "no acepta" in low:
+            state["accepting"] = False
+        else:
+            state["accepting"] = True
+        return state
+
+    def preflight(self) -> None:
+        """Antes de imprimir: la cola tiene que existir, aceptar y estar activa.
+
+        Una cola deshabilitada (el caso típico tras un trabajo atorado) rechaza
+        todo en silencio: `lp` acepta el archivo y nunca sale papel. Se reactiva
+        aquí una vez y, si no aguanta, se reporta el motivo real."""
+        state = self.printer_state()
+        if not state["exists"]:
+            raise RuntimeError(f"la cola {self.printer} no existe en CUPS")
+        if state["enabled"] and state["accepting"]:
+            return
+        why = state["reason"] or ("no acepta trabajos" if not state["accepting"] else "")
+        log(f"  ! cola {self.printer} detenida ({why}); la reactivo")
+        run(["cupsaccept", self.printer], timeout=30)
+        run(["cupsenable", self.printer], timeout=30)
+        time.sleep(1)
+        state = self.printer_state()
+        if not (state["enabled"] and state["accepting"]):
+            raise RuntimeError(
+                f"la cola {self.printer} sigue detenida: {state['reason'] or why}"
+                f" · libera la impresora desde la caja"
+            )
+        log(f"  ✓ cola {self.printer} reactivada")
+
+    def printer_uri(self) -> str:
+        """URI del dispositivo según CUPS (hp:/usb/... o ipp://localhost:...)."""
+        out = run(["lpstat", "-v", self.printer], timeout=30).stdout or ""
+        return out.split(":", 1)[1].strip() if ":" in out else out.strip()
+
+    def printer_report(self) -> dict:
+        state = self.printer_state()
+        uri = self.printer_uri()
+        relay = "localhost" in uri or uri.startswith("ipp://127.")
+        return {
+            "printer": self.printer,
+            "uri": uri,
+            "relay": relay,
+            "exists": state["exists"],
+            "enabled": state["enabled"],
+            "accepting": state["accepting"],
+            "reason": state["reason"],
+            "line": state["line"],
+            "jobs": [{"id": jid, "detail": detail} for jid, detail in self.queue().items()],
+        }
+
+    def liberate_printer(self, cancel: bool = True) -> dict:
+        """Deja la impresora lista: acepta, activa y (si se pide) tira lo atorado."""
+        before = list(self.queue())
+        run(["cupsaccept", self.printer], timeout=30)
+        run(["cupsenable", self.printer], timeout=30)
+        cancelled: list[str] = []
+        failed: list[str] = []
+        if cancel:
+            for jid in before:
+                r = run(["cancel", jid], timeout=30)
+                if r.returncode == 0:
+                    cancelled.append(jid)
+                else:
+                    failed.append(f"{jid}: {(r.stderr or r.stdout).strip()[:120]}")
+        time.sleep(1)
+        return {"cancelled": cancelled, "failed": failed, "state": self.printer_report()}
+
     # -------- impresión -------- #
-    def print_pdf(self, pdf: Path, copies: int, pages: int) -> None:
+    def print_pdf(self, pdf: Path, copies: int, pages: int) -> str | None:
         if self.dry_run:
             log(f"  (dry-run) lp -d {self.printer} -n {copies} {pdf.name}")
-            return
+            return None
         cmd = ["lp", "-d", self.printer, "-n", str(max(1, copies)),
                "-o", "media=na_letter_8.5x11in" if self.paper_name == "letter" else "media=iso_a4_210x297mm",
+               "-o", "job-sheets=none,none",
                str(pdf)]
         r = run(cmd, timeout=120)
         if r.returncode != 0:
             raise RuntimeError(f"lp falló: {(r.stderr or r.stdout).strip()[:200]}")
-        job_id = None
-        for token in (r.stdout or "").split():
-            if token.startswith(self.printer + "-"):
-                job_id = token
-                break
+        # "request id is HP_USB-31 (1 file(s))" — pero también puede venir suelto.
+        m = re.search(rf"\b({re.escape(self.printer)}-\d+)\b", r.stdout or "")
+        job_id = m.group(1) if m else None
         log(f"  → enviado a {self.printer} [{job_id or 'sin id'}] {pages * copies} páginas")
-        self.wait_spool(job_id, pages * copies)
+        return job_id
 
     def wait_spool(self, job_id: str | None, sheets: int) -> None:
-        deadline = time.time() + max(180, sheets * 8)
-        seen = False
-        while time.time() < deadline:
+        """Espera SOLO este trabajo. Los trabajos ajenos atorados en la cola no
+        son asunto de este pedido: antes hacían fallar pedidos buenos en cadena."""
+        if not job_id:
             time.sleep(3)
-            pending = self.pending()
-            if job_id and job_id in pending:
-                seen = True
+            return
+        budget = max(240, min(900, sheets * 12))
+        deadline = time.time() + budget
+        faults = 0
+        missing = 0
+        resumed = False
+        while time.time() < deadline:
+            time.sleep(2)
+            jobs = self.queue()
+            state = self.printer_state()
+            if not state["enabled"] and job_id in jobs:
+                faults += 1
+                if faults >= 3:
+                    raise RuntimeError(
+                        f"la impresora se detuvo: {state['reason'] or 'sin razón'}"
+                        f" · el trabajo {job_id} se quedó en la cola"
+                    )
+            else:
+                faults = 0
+            if job_id in jobs:
+                missing = 0
+                detail = jobs[job_id].lower()
+                if not resumed and any(k in detail for k in ("hold", "paused", "stopped")):
+                    log(f"  ! {job_id} en pausa; lo reanudo")
+                    run(["lp", "-i", job_id, "-H", "resume"], timeout=30)
+                    resumed = True
                 continue
-            if seen or not pending:
+            # Ya no está pendiente: o salió, o alguien lo canceló.
+            if job_id in self.completed():
                 return
-        raise RuntimeError("la impresora no terminó el trabajo (revisa papel, tinta o conexión)")
-
-    def pending(self) -> str:
-        try:
-            return run(["lpstat", "-o", self.printer], timeout=30).stdout or ""
-        except Exception:
-            return ""
+            missing += 1
+            if missing >= 2:
+                raise RuntimeError(f"el trabajo {job_id} se canceló en la cola")
+        raise RuntimeError(
+            f"la impresora no terminó {job_id} en {budget}s (revisa papel, tinta o conexión)"
+        )
 
     def measure(self, pdf: Path) -> list[dict]:
         """Tinta por página (fracciones 0..1) del PDF que se va a imprimir."""
@@ -327,13 +479,16 @@ class Agent:
         self.sweep()
 
     def sweep(self) -> None:
-        """Barrido de seguridad: carpetas huérfanas de más de 24 h."""
+        """Barrido de seguridad: carpetas huérfanas de más de 24 h.
+
+        Las carpetas con nombre reservado (`_errores`) se respetan: ahí vive lo
+        que falló y el mostrador todavía puede necesitarlo."""
         now = time.time()
         for base in (self.spool, REVIEW_HOME):
             if not base.exists():
                 continue
             for d in base.iterdir():
-                if not d.is_dir():
+                if not d.is_dir() or d.name.startswith("_"):
                     continue
                 try:
                     if now - d.stat().st_mtime > 24 * 3600:
@@ -348,12 +503,20 @@ class Agent:
         self.ack(folio, "error", None, msg)
         if self.dry_run:
             return
-        try:
+        # Los pedidos con nota viven en el Escritorio, no en spool: se mueve la
+        # carpeta donde de verdad esté, sin perder el trabajo del mostrador.
+        for base in (self.spool, REVIEW_HOME):
+            src = base / folio
+            if not src.is_dir():
+                continue
             dest = self.spool / "_errores" / folio
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(self.spool / folio), str(dest))
-        except Exception:
-            pass
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.rmtree(dest, ignore_errors=True)
+                shutil.move(str(src), str(dest))
+                log(f"  → guardado en {dest} para reintentar")
+            except Exception:  # noqa: BLE001
+                pass
 
     # -------- ciclo -------- #
     def prepare_review(self, job: dict) -> None:
@@ -402,15 +565,20 @@ class Agent:
         folio = job["folio"]
         log(f"Imprimiendo {folio} · {job['copies']}× · "
             f"{'color' if job['mode'] == 'color' else 'B/N'} · {len(job['files'])} archivo(s)")
-        work = self.spool / folio
+        work = self.workdir(job)
         try:
             files, verified = self.prepare(job)
+            # Si el mostrador cerró el pedido mientras preparábamos los archivos
+            # (lo imprimió a mano), no se manda papel doble.
+            if not self.mark_sent(folio):
+                return
+            self.preflight()
             if self.cover:
                 cover = self.cover_sheet(job, work / "00-portada.pdf", verified)
                 if cover:
-                    self.print_pdf(cover, 1, 1)
+                    self.wait_spool(self.print_pdf(cover, 1, 1), 1)
             for pdf, n in files:
-                self.print_pdf(pdf, job["copies"], n)
+                self.wait_spool(self.print_pdf(pdf, job["copies"], n), n * job["copies"])
             # La carpeta NO se borra aquí: queda una hora por si hay que reimprimir.
             # De eso se encarga purge(), que corre cada 10 minutos.
             self.ack(folio, "done", verified)
@@ -421,6 +589,18 @@ class Agent:
     def loop(self) -> None:
         interval = int(self.cfg.get("poll_seconds", 8))
         log(f"Agente activo · {self.base} · impresora {self.printer} · cada {interval}s")
+        st = self.printer_state()
+        if not st["exists"]:
+            log(f"! la cola {self.printer} no existe en CUPS: revisa `printer` en config.json")
+        elif not st["enabled"]:
+            log(f"! la cola {self.printer} está detenida ({st['reason']}); se reactiva al imprimir")
+        uri = self.printer_uri()
+        if "localhost" in uri:
+            # ipp://localhost:NNNNN es un puente que solo existe mientras la app
+            # de HP está abierta: si se cierra, CUPS deshabilita la cola y todo
+            # se queda atorado. Se imprime por la cola directa del sistema.
+            log(f"! {self.printer} apunta a un puente local ({uri}): "
+                f"mejor usar la cola directa, p. ej. Smart-Tank-580-590")
         while True:
             try:
                 if time.time() - self._last_purge > 600:
@@ -461,6 +641,12 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="normaliza sin imprimir ni reportar")
     ap.add_argument("--liberar", metavar="FOLIO",
                     help="autoriza un pedido en revisión y lo manda a cotizar")
+    ap.add_argument("--liberar-impresora", action="store_true",
+                    help="acepta, activa y limpia la cola de la impresora")
+    ap.add_argument("--solo-activar", action="store_true",
+                    help="con --liberar-impresora: solo activa, no cancela trabajos")
+    ap.add_argument("--diagnostico", action="store_true",
+                    help="muestra el estado de la cola y de la impresora, sin imprimir")
     ap.add_argument("--config", default=str(CONFIG_PATH))
     args = ap.parse_args()
 
@@ -475,6 +661,30 @@ def main() -> int:
             return 2
 
     agent = Agent(cfg, dry_run=args.dry_run)
+    if args.diagnostico:
+        rep = agent.printer_report()
+        log(f"cola {rep['printer']} · {'activa' if rep['enabled'] else 'DETENIDA'}"
+            f" · {'acepta' if rep['accepting'] else 'no acepta'}"
+            f"{' · ' + rep['reason'] if rep['reason'] else ''}")
+        log(f"  dispositivo: {rep['uri'] or '(sin uri)'}")
+        if rep["relay"]:
+            log("  ! es un puente local (ipp://localhost): si la app del fabricante"
+                " no está abierta, la cola se cae. Usa la cola directa del sistema.")
+        for f in rep["jobs"]:
+            log(f"  en cola: {f['detail']}")
+        if not rep["jobs"]:
+            log("  sin trabajos pendientes")
+        return 0 if rep["enabled"] and rep["accepting"] else 1
+    if args.liberar_impresora:
+        res = agent.liberate_printer(cancel=not args.solo_activar)
+        for jid in res["cancelled"]:
+            log(f"  ✗ cancelado {jid}")
+        for msg in res["failed"]:
+            log(f"  ! no pude cancelar {msg}")
+        st = res["state"]
+        log(f"cola {st['printer']} · {'activa' if st['enabled'] else 'DETENIDA'}"
+            f" · {len(st['jobs'])} pendientes")
+        return 0 if st["enabled"] else 1
     if args.liberar:
         res = agent.release(args.liberar.strip().upper())
         log(f"{args.liberar} liberado → {res.get('status')}")

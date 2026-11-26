@@ -26,7 +26,7 @@ No es una app de impresión ni un marketplace: es la puerta de entrada del mostr
 ## Operating Context
 
 - Negocio físico de copias e impresiones, volumen bajo y pedidos chicos; la mayoría se resuelve el mismo día.
-- Impresora HP Smart Tank 580, conectada por USB a la laptop del mostrador (cola CUPS `HP_USB`, sin red). Sin dúplex automático, sin alimentador, 400–800 páginas/mes recomendadas.
+- Impresora HP Smart Tank 580, conectada por USB a la laptop del mostrador. Se imprime por la cola CUPS directa del sistema (`Smart-Tank-580-590`, `hp:/usb/...`), no por la cola `HP_USB`, que es un puente `ipp://localhost:60000` que solo existe mientras la app del fabricante está abierta: cuando se cierra, CUPS deshabilita esa cola y todo lo que se manda se queda atorado y termina en error. Sin dúplex automático, sin alimentador, 400–800 páginas/mes recomendadas.
 - Cliente en el local, de pie, con luz de día o del local, pantalla de teléfono a 20–40 cm.
 - El pedido se identifica por folio; el cliente lo dice en el mostrador.
 - Papelería y precios en pesos mexicanos; tamaño de hoja Carta por defecto.

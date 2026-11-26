@@ -1,7 +1,7 @@
 {
   "api_base": "https://brilint-print.pages.dev",
   "agent_token": "PEGA-AQUI-EL-TOKEN-QUE-GENERES",
-  "printer": "HP_USB",
+  "printer": "Smart-Tank-580-590",
   "paper": "letter",
   "cover_sheet": true,
   "poll_seconds": 8,
