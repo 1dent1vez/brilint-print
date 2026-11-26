@@ -52,6 +52,17 @@ fi
 say "Esquema de la cola"
 $W d1 execute "$PROJECT" --remote --file schema.sql
 
+# Migraciones posteriores: cada archivo se aplica una vez. Si la columna ya
+# existe, D1 responde error y se ignora (no hay ADD COLUMN IF NOT EXISTS).
+if [ -d migrations ]; then
+  for m in $(ls migrations/*.sql 2>/dev/null | sort); do
+    echo "  → $m"
+    $W d1 execute "$PROJECT" --remote --file "$m" >/dev/null 2>&1 \
+      && echo "    aplicada" \
+      || echo "    (ya estaba aplicada, se ignora)"
+  done
+fi
+
 say "Token del agente"
 if [ ! -s agent/.token ]; then
   python3 -c "import secrets; print(secrets.token_urlsafe(32))" > agent/.token
