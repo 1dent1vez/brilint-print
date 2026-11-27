@@ -434,7 +434,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "cuerpo inválido"})
         folio = str(payload.get("folio") or "").upper()
         accion = str(payload.get("accion") or "")
-        if not folio and accion != "liberar-impresora":
+        # El código del cliente llega sin folio: la caja lo resuelve ella.
+        if not folio and accion not in ("liberar-impresora", "liberar-codigo"):
             return self._json(400, {"error": "falta folio"})
 
         if accion == "abrir":
