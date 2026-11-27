@@ -339,7 +339,7 @@
     if (!("NDEFReader" in window) || !state.folio) return;
     el.tap.disabled = true;
     el.tapMsg.hidden = false;
-    el.tapMsg.textContent = "Acerca el teléfono a la etiqueta del mostrador…";
+    el.tapMsg.textContent = "Acerca el teléfono al acrílico del mostrador…";
     try {
       tapLector = new NDEFReader();
       await tapLector.scan();          // pide permiso y empieza a escuchar
