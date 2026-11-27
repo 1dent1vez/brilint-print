@@ -354,6 +354,14 @@
     try {
       tapLector = new NDEFReader();
       await tapLector.scan();          // pide permiso y empieza a escuchar
+      if (!("onreading" in tapLector)) return;
+      // si nadie acerca la etiqueta en 40 s, se dice en vez de quedarse mudo
+      setTimeout(() => {
+        if (el.tap.disabled) {
+          el.tapMsg.textContent = "No se leyó ninguna etiqueta. Acércala al reverso del teléfono o dicta el código.";
+          el.tap.disabled = false;
+        }
+      }, 40000);
       tapLector.onreading = async (e) => {
         el.tapMsg.textContent = "Etiqueta leída, mandando…";
         try {
