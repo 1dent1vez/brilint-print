@@ -22,18 +22,20 @@ export async function onRequestPost({ request, env }) {
   }
 
   const row = await env.DB.prepare(
-    `SELECT mode, copies, status, pages, files_json FROM jobs WHERE folio = ?`
+    `SELECT mode, copies, status, pages, review, confirmed_at, quote_json, purged_at,
+            json_extract(plan_json, '$.price_terms') AS price_terms FROM jobs WHERE folio = ?`
   ).bind(folio).first();
   if (!row) return bad("Pedido no encontrado.", 404);
-  if (row.status === "quoted" || row.status === "queued" || row.status === "printing") {
+  if (row.quote_json && ["quoted", "held", "queued", "printing", "done"].includes(row.status)) {
     return json({ ok: true, already: true });
   }
+  if (row.purged_at) return bad("El pedido ya no está disponible.", 410);
   if (row.status !== "measuring" && row.status !== "quoting") {
     return bad(`El pedido está en estado ${row.status}.`, 409);
   }
 
-  // Coherencia mínima: el número de páginas no puede inventarse.
-  if (Math.abs(pages.length - row.pages) > Math.max(2, row.pages * 0.2)) {
+  // Un ajuste de mostrador puede cambiar el número de páginas por diseño.
+  if (!row.review && Math.abs(pages.length - row.pages) > Math.max(2, row.pages * 0.2)) {
     return bad("Las páginas medidas no cuadran con el pedido.", 409);
   }
 
@@ -48,11 +50,19 @@ export async function onRequestPost({ request, env }) {
     measured_at: new Date().toISOString(),
   };
 
-  await env.DB.prepare(
-    `UPDATE jobs SET status = 'quoted', total = ?, pages_verified = ?, quote_json = ?, quoted_at = ?
-      WHERE folio = ?`
-  ).bind(total, pages.length, JSON.stringify(quote), quote.measured_at, folio).run();
+  const authorized = row.review && row.confirmed_at && row.price_terms === "variable";
+  const status = authorized ? "queued" : "quoted";
+  const updated = await env.DB.prepare(
+    `UPDATE jobs SET status = ?, total = ?, pages_verified = ?, quote_json = ?, quoted_at = ?, claimed_at = NULL
+      WHERE folio = ? AND status IN ('measuring','quoting') AND purged_at IS NULL
+      RETURNING status`
+  ).bind(status, total, pages.length, JSON.stringify(quote), quote.measured_at, folio).first();
+  if (!updated) {
+    const current = await env.DB.prepare(`SELECT status, quote_json FROM jobs WHERE folio = ?`).bind(folio).first();
+    if (current?.quote_json) return json({ ok: true, already: true });
+    return bad(`El pedido está en estado ${current?.status || "desconocido"}.`, 409);
+  }
 
-  console.log(JSON.stringify({ evt: "job_quoted", folio, pages: pages.length, total }));
-  return json({ ok: true, folio, total, lines: q.lines });
+  console.log(JSON.stringify({ evt: "job_quoted", folio, pages: pages.length, total, status }));
+  return json({ ok: true, folio, total, status, lines: q.lines });
 }

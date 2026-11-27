@@ -73,3 +73,16 @@ export async function fallo(env, tipo) {
 export async function acierto(env, tipo) {
   await env.BUCKET.delete(`fails:${tipo}`);
 }
+
+// La presencia inicia revisión (precio variable) o libera la impresión normal.
+// La transición atómica evita que código y NFC procesen dos veces el pedido.
+export function presencial(env, folio, status) {
+  const special = status === "review_held";
+  return env.DB.prepare(
+    `UPDATE jobs SET status = ?, claimed_at = NULL,
+                     confirmed_at = COALESCE(confirmed_at, ?)
+      WHERE folio = ? AND purged_at IS NULL
+        AND (status = ? OR (? = 0 AND status IN ('held','quoted')))
+      RETURNING folio, status, total`
+  ).bind(special ? "review" : "queued", new Date().toISOString(), folio, status, Number(special)).first();
+}

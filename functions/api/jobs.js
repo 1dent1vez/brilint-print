@@ -5,6 +5,8 @@ import { json, bad, makeFolio, makeClaimCode, r2Key, clientIp } from "../_lib.js
 const TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
 
 export async function onRequestPost({ request, env }) {
+  const stored = [];
+  let inserted = false;
   try {
     const declared = Number(request.headers.get("content-length") || 0);
     if (declared > (PRICES.max_mb + 4) * 1024 * 1024) {
@@ -35,24 +37,10 @@ export async function onRequestPost({ request, env }) {
     if (!files.length) return bad("No llegó ningún archivo.");
     if (files.length > PRICES.max_files) return bad(`Máximo ${PRICES.max_files} archivos por pedido.`);
 
-    // Filtro de presencialidad: nada se imprime hasta que alguien dicta en el
-    // mostrador el código de este pedido. Un archivo mandado desde fuera se
-    // queda esperando y no gasta papel.
-    // Único entre los abiertos Y entre los de las últimas 24 h: un código de
-    // un pedido ya cerrado no puede "robarle" la liberación a uno nuevo.
-    let claimCode = makeClaimCode();
-    const desde = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    for (let i = 0; i < 6; i++) {
-      const choque = await env.DB.prepare(
-        `SELECT 1 AS x FROM jobs WHERE claim_code = ? AND created_at > ? LIMIT 1`
-      ).bind(claimCode, desde).first();
-      if (!choque) break;
-      claimCode = makeClaimCode();
-    }
-
     let bytes = 0;
     for (const f of files) {
       if (!TYPES.has(f.type)) return bad(`Formato no aceptado: ${f.name}. Solo PDF, JPG o PNG.`);
+      if (f.size > 25 * 1024 * 1024) return bad(`${f.name} pasa de 25 MB. Súbelo en dos partes.`, 413);
       bytes += f.size;
     }
     if (bytes > PRICES.max_mb * 1024 * 1024) return bad(`El pedido pasa de ${PRICES.max_mb} MB.`);
@@ -74,31 +62,42 @@ export async function onRequestPost({ request, env }) {
     // mostrador mide la tinta real de cada página (estado 'quoting' → 'quoted').
     const folio = makeFolio();
     const createdAt = new Date().toISOString();
+    const status = review ? "review_pending" : "quoting";
+    const uploadId = crypto.randomUUID();
 
-    const stored = [];
     for (const [i, f] of files.entries()) {
-      const key = r2Key(folio, i, f.name);
-      // KV: sin costo ni método de pago, 25 MB por valor.
-      if (f.size > 25 * 1024 * 1024) return bad(`${f.name} pasa de 25 MB. Súbelo en dos partes.`, 413);
+      const key = r2Key(`${folio}/${uploadId}`, i, f.name);
       await env.BUCKET.put(key, await f.arrayBuffer(), {
         metadata: { contentType: f.type, folio, original: String(f.name).slice(0, 120) },
       });
       stored.push({ name: String(f.name).slice(0, 120), type: f.type, size: f.size, pages: perFile[i], key });
     }
 
-    await env.DB.prepare(
-      `INSERT INTO jobs (folio, created_at, status, mode, copies, pages, total, customer, phone, notes,
-                        files_json, plan_json, review, claim_code)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(folio, createdAt, review ? "review" : "quoting", mode, copies, pages, customer, phone, notes,
-           JSON.stringify(stored), JSON.stringify(plan), review, claimCode).run();
+    // Reservar en la misma escritura: dos cargas concurrentes no comparten código.
+    let claimCode;
+    const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    for (let i = 0; i < 12 && !inserted; i++) {
+      claimCode = makeClaimCode();
+      const result = await env.DB.prepare(
+        `INSERT INTO jobs (folio, created_at, status, mode, copies, pages, total, customer, phone, notes,
+                          files_json, plan_json, review, claim_code)
+         SELECT ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE claim_code = ? AND created_at > ?)`
+      ).bind(folio, createdAt, status, mode, copies, pages, customer, phone, notes,
+             JSON.stringify(stored), JSON.stringify(plan), review, claimCode, claimCode, since).run();
+      inserted = result.meta.changes > 0;
+    }
+    if (!inserted) {
+      await Promise.allSettled(stored.map((f) => env.BUCKET.delete(f.key)));
+      return bad("No pudimos reservar un código. Intenta de nuevo.", 503);
+    }
 
     console.log(JSON.stringify({ evt: "job_created", folio, files: stored.length, pages, bytes, ip: clientIp(request) }));
 
     return json({
       folio,
-      code: claimCode,
-      status: review ? "review" : "quoting",
+      code: review ? null : claimCode,
+      status,
       review,
       mode, copies, pages,
       currency: PRICES.currency,
@@ -106,6 +105,7 @@ export async function onRequestPost({ request, env }) {
       files: stored.map((f) => ({ name: f.name, pages: f.pages })),
     });
   } catch (e) {
+    if (!inserted) await Promise.allSettled(stored.map((f) => env.BUCKET.delete(f.key)));
     console.error("jobs_error", e?.stack || String(e));
     return bad("No pudimos registrar el pedido. Intenta de nuevo o entrégalo en el mostrador.", 500);
   }

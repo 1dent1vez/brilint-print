@@ -6,11 +6,14 @@ export async function onRequestGet({ params, env }) {
 
   const row = await env.DB.prepare(
     `SELECT folio, created_at, status, mode, copies, pages, pages_verified, total,
-            printed_at, quote_json, claim_code
+            printed_at, quote_json, claim_code, review, purged_at
        FROM jobs WHERE folio = ?`
   ).bind(folio).first();
 
   if (!row) return bad("No encontramos ese folio.", 404);
+  if (row.purged_at && row.review && !["done", "error"].includes(row.status)) {
+    return bad("Este pedido caducó. Sube los archivos de nuevo.", 410);
+  }
 
   return json({
     folio: row.folio,
@@ -19,9 +22,9 @@ export async function onRequestGet({ params, env }) {
     mode: row.mode,
     copies: row.copies,
     pages: row.pages_verified || row.pages,
-    total: row.total,
+    total: row.review && !row.quote_json && !row.total ? null : row.total,
     quote: row.quote_json ? JSON.parse(row.quote_json) : null,
-    code: row.claim_code || null,
+    code: row.status === "review_pending" ? null : row.claim_code || null,
     nfc: Boolean(env.NFC_TAG_ID),
     ready_at: row.status === "done" ? row.printed_at : null,
   });

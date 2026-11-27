@@ -13,6 +13,7 @@
     folio: null,
     status: null,
     quote: null,
+    folioData: null,
     poll: null,
     waitTimer: null,
   };
@@ -28,9 +29,11 @@
     measuring: $("measuring"), quoteTicket: $("quote-ticket"), quoteTitle: $("quote-title"),
     quoteSub: $("quote-sub"), qTotal: $("q-total"), qLines: $("q-lines"), qMeta: $("q-meta"),
     confirm: $("confirm"), quoteErr: $("quote-err"), quoteWait: $("quote-wait"),
-    folio: $("folio"), status: $("status"), statusText: $("status-text"), resume: $("resume"),
+    folio: $("folio"), status: $("status"), statusText: $("status-text"),
+    folioCopies: $("folio-copies"), folioPages: $("folio-pages"), folioTotal: $("folio-total"),
+    specialConfirm: $("special-confirm"), confirmVariable: $("confirm-variable"), specialErr: $("special-err"),
     claim: $("claim"), claimCode: $("claim-code"), tap: $("tap"), tapMsg: $("tap-msg"),
-    nfc: $("nfc"), tapText: $("tap-text"),
+    claimHelp: $("claim-help"), claimOr: $("claim-or"), nfc: $("nfc"), tapText: $("tap-text"),
     again: $("again"), maxmb: $("maxmb"),
   };
 
@@ -126,7 +129,7 @@
     const tooBig = totalBytes() > state.prices.max_mb * 1024 * 1024;
     const needsText = el.needsNotes.checked && el.notes.value.trim().length < 4;
     el.sendBtn.disabled = !(ok > 0 && !tooBig && !state.uploading && !needsText);
-    el.sendBtn.textContent = state.uploading ? "Enviando…" : "Enviar y cotizar";
+    el.sendBtn.textContent = state.uploading ? "Enviando…" : el.needsNotes.checked ? "Enviar pedido" : "Enviar y cotizar";
     el.err.textContent = errMsg || (needsText ? "Escribe qué necesitas, o desactiva la casilla." : "");
   }
 
@@ -191,6 +194,10 @@
     state.folio = data.folio;
     state.status = data.status || "quoting";
     state.quote = null;
+    if (state.status === "review_pending") {
+      showDone(data);
+      return;
+    }
     screen("quoteStep");
     el.measuring.hidden = false;
     el.quoteTicket.hidden = true;
@@ -230,8 +237,10 @@
         el.quoteSub.textContent = "Lo está revisando el mostrador para respetar tus indicaciones. En un momento aparece tu total.";
       } else if (d.status === "error") {
         clearInterval(state.poll);
+        clearTimeout(state.waitTimer);
         el.measuring.hidden = true;
-        el.quoteErr.textContent = "No pudimos medir tus archivos. Llévalos en USB al mostrador.";
+        el.quoteTitle.textContent = "No pudimos cotizar";
+        el.quoteSub.textContent = "Lleva tus archivos en USB al mostrador.";
       } else if (d.status === "measuring") {
         el.quoteTitle.textContent = "Cotizando";
         el.quoteSub.textContent = "Leyendo tus archivos y midiendo la tinta de cada página.";
@@ -292,52 +301,98 @@
   }
 
   /* ---------------- folio ---------------- */
+  async function confirmVariable() {
+    const folio = state.folio;
+    if (!folio || state.status !== "review_pending") return;
+    el.confirmVariable.disabled = true;
+    el.specialErr.textContent = "";
+    try {
+      const r = await fetch(`/api/jobs/${encodeURIComponent(folio)}/confirm`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ price_terms: "variable" }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "No se pudo confirmar.");
+      if (state.folio === folio && state.status === "review_pending") renderFolio(d);
+    } catch (e) {
+      if (state.folio === folio) el.specialErr.textContent = e.message || "No se pudo confirmar. Intenta de nuevo.";
+    } finally {
+      if (state.folio === folio) el.confirmVariable.disabled = false;
+    }
+  }
+
   function showDone(data) {
+    state.folioData = null;
+    el.specialErr.textContent = "";
+    el.confirmVariable.disabled = false;
+    const hash = `#folio=${state.folio}`;
+    if (location.hash !== hash) history.replaceState(null, "", hash);
     screen("done");
-    el.folio.textContent = data.folio || state.folio;
-    setStatus(data.status || "held");
-    if (data.code && el.claim) {
-      el.claimCode.textContent = data.code;
-      el.claim.hidden = false;
-      // Con Web NFC (Android) basta acercar el teléfono a la etiqueta; en
-      // iPhone el botón no aparece y el cliente dicta el código.
-      const conNfc = "NDEFReader" in window;
-      if (!conNfc) {
-        // Sin Web NFC (iPhone, o el navegador de dentro de WhatsApp/Facebook)
-        // el único camino es dictar el código. Se dice, no se deja en blanco.
-        el.tapMsg.hidden = false;
-        el.tapMsg.textContent = /Android/i.test(navigator.userAgent)
-          ? "Abre esta página en Chrome (no dentro de WhatsApp) para imprimir acercando el teléfono."
-          : "Este teléfono no imprime con NFC: dicta el código en el mostrador.";
-      } else if (data.status !== "done") {
-        // Solo si el mostrador ya registró su etiqueta.
-        fetch(`/api/jobs/${encodeURIComponent(data.folio || state.folio)}`)
-          .then((r) => r.json())
-          .then((d) => {
-            if (d.nfc) { el.nfc.hidden = false; el.tap.hidden = false; }
-            else { el.tapMsg.hidden = false; el.tapMsg.textContent = "El mostrador todavía no registra su etiqueta: dicta el código."; }
-          })
-          .catch(() => {});
-      }
-    }
-    const q = state.quote;
-    el.resume.innerHTML = "";
-    const rows = [
-      ["Modo", (q && state.quote) ? null : null],
-      ["Copias", num(q ? q.copies : 1)],
-      ["Páginas por juego", num(q ? q.pages : 0)],
-      ["Total", money(data.total ?? (q ? q.total : 0))],
-    ].filter(([k]) => k !== "Modo");
-    for (const [k, v] of rows) {
-      const dt = document.createElement("dt"); dt.textContent = k;
-      const dd = document.createElement("dd"); dd.textContent = v;
-      el.resume.append(dt, dd);
-    }
+    renderFolio(data);
     startStatusPolling();
+  }
+
+  async function restoreFolio() {
+    const match = /^#folio=([0-9]{6}-[A-Z2-9]{4})$/.exec(location.hash);
+    if (!match) return;
+    const folio = match[1];
+    screen("send");
+    el.sendSub.textContent = "Buscando tu folio…";
+    try {
+      const r = await fetch(`/api/jobs/${encodeURIComponent(folio)}`);
+      if (r.status === 410) {
+        state.folio = folio;
+        showDone({ folio, status: "expired" });
+        return;
+      }
+      if (!r.ok) throw new Error(r.status === 404 ? "No encontramos ese folio." : "No pudimos recuperar el folio.");
+      const d = await r.json();
+      state.folio = folio;
+      if (d.status === "quoted") startQuote(d);
+      else showDone(d);
+    } catch (e) {
+      fail(e.message || "No pudimos recuperar el folio. Vuelve a cargar esta página.");
+    }
+  }
+
+  function renderFolio(data) {
+    const previous = state.folioData;
+    const d = state.folioData = { ...previous, ...data };
+    state.status = d.status;
+    const awaiting = d.status === "held" || d.status === "review_held";
+    const showNfc = awaiting && Boolean(d.code && d.nfc) && "NDEFReader" in window;
+    el.folio.textContent = d.folio || state.folio;
+    if (previous?.status !== d.status) {
+      setStatus(d.status);
+      if (!awaiting) stopTap();
+      el.tap.disabled = false;
+      el.tapMsg.hidden = true;
+      nfcEstado("", "Toca aquí y acerca el teléfono");
+    }
+    el.specialConfirm.hidden = d.status !== "review_pending";
+    el.claim.hidden = !(awaiting && d.code);
+    el.claimCode.textContent = awaiting ? d.code || "—" : "—";
+    el.claimHelp.textContent = d.status === "review_held"
+      ? "En cuanto lo tecleen, empezamos a preparar tu pedido."
+      : "En cuanto lo tecleen, tu pedido se imprime.";
+    el.nfc.hidden = !showNfc;
+    el.claimOr.hidden = !showNfc;
+    const q = d.quote || state.quote;
+    const total = d.total ?? q?.total;
+    const details = [
+      [el.folioCopies, num(q?.copies ?? d.copies ?? 1)],
+      [el.folioPages, num(q?.pages ?? d.pages ?? 0)],
+      [el.folioTotal, total == null ? "Por calcular" : money(total)],
+    ];
+    for (const [node, value] of details) {
+      if (node.textContent !== value) node.textContent = value;
+    }
   }
 
   const LABEL = {
     quoting: "Cotizando", measuring: "Cotizando", quoted: "Por confirmar",
+    review_pending: "Por confirmar", review_held: "Esperando el código",
+    review: "Por preparar", reviewing: "Preparando tu pedido", expired: "Pedido caducado",
     held: "Esperando el código", queued: "En fila", printing: "Imprimiendo",
     done: "Listo para recoger", error: "Necesita revisión",
   };
@@ -346,7 +401,11 @@
     el.status.classList.toggle("done", s === "done");
   }
 
-  let tapLector = null;
+  let tapScan = null;
+  function stopTap() {
+    tapScan?.abort();
+    tapScan = null;
+  }
   function nfcEstado(estado, texto) {
     if (!el.nfc) return;
     el.nfc.classList.remove("is-listening", "is-ok", "is-error");
@@ -355,41 +414,49 @@
   }
   async function tocarEtiqueta() {
     if (!("NDEFReader" in window) || !state.folio) return;
+    stopTap();
+    const folio = state.folio;
+    const special = state.status === "review_held";
+    const scan = tapScan = new AbortController();
     el.tap.disabled = true;
     el.tapMsg.hidden = false;
     nfcEstado("listening", "Acerca el teléfono…");
     try {
       nfcEstado("listening", "Acerca el teléfono a la tarjeta…");
       el.tapMsg.hidden = true;
-      tapLector = new NDEFReader();
-      await tapLector.scan();          // pide permiso y empieza a escuchar
-      if (!("onreading" in tapLector)) return;
+      const reader = new NDEFReader();
+      await reader.scan({ signal: scan.signal });
+      if (scan.signal.aborted) return;
       // si nadie acerca la etiqueta en 40 s, se dice en vez de quedarse mudo
       setTimeout(() => {
-        if (el.tap.disabled) {
+        if (tapScan === scan && el.tap.disabled) {
+          stopTap();
           nfcEstado("error", "No se leyó. Pásalo por el reverso del teléfono o dicta el código.");
           el.tap.disabled = false;
         }
       }, 40000);
-      tapLector.onreading = async (e) => {
-        nfcEstado("ok", "¡Leída! Mandando tu pedido…");
+      reader.onreading = async (e) => {
+        if (tapScan !== scan || state.folio !== folio) return;
+        stopTap();
+        nfcEstado("ok", special ? "¡Leída! Avisando al mostrador…" : "¡Leída! Mandando tu pedido…");
         try {
-          const r = await fetch(`/api/jobs/${encodeURIComponent(state.folio)}/tap`, {
+          const r = await fetch(`/api/jobs/${encodeURIComponent(folio)}/tap`, {
             method: "POST", headers: { "content-type": "application/json" },
             body: JSON.stringify({ tag: e.serialNumber || "" }),
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.error || "No se pudo liberar.");
-          nfcEstado("ok", "¡Listo! Tu pedido va a la impresora.");
-          el.tap.hidden = true;
-          setStatus(d.status || "queued");
+          if (state.folio === folio && ["held", "review_held"].includes(state.status)) renderFolio(d);
         } catch (err) {
+          if (state.folio !== folio || !["held", "review_held"].includes(state.status)) return;
           nfcEstado("error", err.message || "No se pudo liberar.");
           el.tapMsg.hidden = false; el.tapMsg.textContent = err.message || "";
           el.tap.disabled = false;
         }
       };
     } catch (e) {
+      if (scan.signal.aborted) return;
+      stopTap();
       nfcEstado("error", e.name === "NotAllowedError"
         ? "Dale permiso de NFC a Chrome y vuelve a tocar."
         : "No pude usar el NFC de este teléfono. Dicta el código.");
@@ -399,18 +466,29 @@
 
   function startStatusPolling() {
     clearInterval(state.poll);
+    const folio = state.folio;
+    let busy = false;
     const tick = async () => {
-      if (!state.folio || document.hidden) return;
+      if (!folio || state.folio !== folio || document.hidden || busy) return;
+      const before = state.status;
+      busy = true;
       try {
-        const r = await fetch(`/api/jobs/${encodeURIComponent(state.folio)}`, { headers: { accept: "application/json" } });
+        const r = await fetch(`/api/jobs/${encodeURIComponent(folio)}`, { headers: { accept: "application/json" } });
+        if (state.folio !== folio || state.status !== before) return;
+        if (r.status === 410) {
+          renderFolio({ status: "expired" });
+          clearInterval(state.poll);
+          return;
+        }
         if (!r.ok) return;
         const d = await r.json();
-        setStatus(d.status);
+        if (state.folio !== folio || state.status !== before) return;
+        renderFolio(d);
         if (d.status === "done" || d.status === "error") clearInterval(state.poll);
-      } catch {}
+      } catch {} finally { busy = false; }
     };
-    state.poll = setInterval(tick, 20000);
-    setTimeout(tick, 4000);
+    state.poll = setInterval(tick, 2500);
+    tick();
   }
 
   /* ---------------- eventos ---------------- */
@@ -435,10 +513,13 @@
   el.sendBtn.addEventListener("click", submit);
   el.tap && el.tap.addEventListener("click", tocarEtiqueta);
   el.confirm.addEventListener("click", confirm);
+  el.confirmVariable.addEventListener("click", confirmVariable);
   el.again.addEventListener("click", () => {
     clearInterval(state.poll);
     clearTimeout(state.waitTimer);
-    state.files = []; state.folio = null; state.quote = null; state.status = null;
+    stopTap();
+    if (location.hash.startsWith("#folio=")) history.replaceState(null, "", location.pathname + location.search);
+    state.files = []; state.folio = null; state.quote = null; state.status = null; state.folioData = null;
     el.done.hidden = true; el.send.hidden = true; el.quoteStep.hidden = true; el.form.hidden = false;
     el.notes.value = "";
     el.needsNotes.checked = false;
@@ -456,4 +537,5 @@
   });
 
   loadPrices();
+  restoreFolio();
 })();

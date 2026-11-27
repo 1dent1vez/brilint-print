@@ -51,10 +51,11 @@ class Cliente:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, json.loads(r.read().decode() or "{}")
         except urllib.error.HTTPError as e:
-            try:
-                return e.code, json.loads(e.read().decode() or "{}")
-            except Exception:
-                return e.code, {"error": "sin cuerpo"}
+            with e:
+                try:
+                    return e.code, json.loads(e.read().decode() or "{}")
+                except Exception:
+                    return e.code, {"error": "sin cuerpo"}
 
     def agente(self, path: str, body: dict | None = None) -> tuple[int, dict]:
         return self._req(path, "POST", body, headers={"x-agent-token": self.token})
@@ -118,8 +119,12 @@ def main() -> int:
 
     print("\n1 · Pedido con indicaciones: el mostrador lo imprime a mano")
     j1 = c.crear("Imagen de 10x10 en hoja opalina")
-    check("nace en review", j1["status"] == "review", j1["status"])
+    check("nace esperando confirmación", j1["status"] == "review_pending", j1["status"])
     f1 = j1["folio"]
+    code, d = c._req(f"/api/jobs/{f1}/confirm", "POST", {"price_terms": "variable"})
+    check("acepta precio variable y espera presencia", code == 200 and d.get("status") == "review_held", str(d))
+    code, d = c.agente("/api/agent/manual", {"action": "release", "code": d.get("code")})
+    check("con código entra a revisión", code == 200 and d.get("status") == "review", str(d))
 
     code, d = c.agente("/api/agent/next", {"stage": "review"})
     check("el agente lo toma para revisión", d.get("job") and d["job"]["folio"] == f1,

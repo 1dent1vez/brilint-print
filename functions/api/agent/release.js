@@ -15,9 +15,14 @@ export async function onRequestPost({ request, env }) {
     return bad(`El pedido está en estado ${row.status}.`, 409);
   }
 
-  await env.DB.prepare(
-    `UPDATE jobs SET status = 'quoting', claimed_at = NULL WHERE folio = ?`
-  ).bind(folio).run();
+  const changed = await env.DB.prepare(
+    `UPDATE jobs SET status = 'quoting', claimed_at = NULL
+      WHERE folio = ? AND purged_at IS NULL
+        AND ((status IN ('review','reviewing') AND confirmed_at IS NULL)
+          OR (status = 'reviewing' AND json_extract(plan_json, '$.prepared_at') IS NOT NULL))
+      RETURNING status`
+  ).bind(folio).first();
+  if (!changed) return bad("El pedido no está listo para medir o ya caducó.", 409);
 
   console.log(JSON.stringify({ evt: "job_released", folio }));
   return json({ ok: true, folio, status: "quoting" });

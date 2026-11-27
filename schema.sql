@@ -1,6 +1,6 @@
 -- Cola de trabajos de Print with Brilint
--- Estados: review | reviewing | quoting | measuring | quoted | queued |
---          printing | done | error
+-- Estados: review_pending | review_held | review | reviewing | quoting |
+--          measuring | quoted | held | queued | printing | done | error
 CREATE TABLE IF NOT EXISTS jobs (
   folio           TEXT PRIMARY KEY,
   created_at      TEXT NOT NULL,

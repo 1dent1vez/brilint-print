@@ -10,7 +10,9 @@ export async function onRequestGet({ request, env }) {
   const res = await env.DB.prepare(
     `SELECT folio, created_at, status, mode, copies, pages, pages_verified, total,
             notes, review, quote_json, printed_at, printed_by, error, attempts,
-            claimed_at, attempted_at
+            claimed_at, attempted_at, confirmed_at, purged_at,
+            json_extract(plan_json, '$.prepared_at') AS prepared_at,
+            json_extract(plan_json, '$.price_terms') AS price_terms
        FROM jobs
       ORDER BY created_at DESC
       LIMIT ?`
@@ -24,8 +26,10 @@ export async function onRequestGet({ request, env }) {
     copies: r.copies,
     pages: r.pages_verified || r.pages,
     total: r.total,
-    notes: r.notes || "",
+    notes: ["review_pending", "review_held"].includes(r.status) ? "" : r.notes || "",
     review: r.review || 0,
+    review_authorized: Boolean(r.review && r.confirmed_at && r.price_terms === "variable"),
+    review_ready: Boolean(r.prepared_at && !r.purged_at),
     quote: r.quote_json ? JSON.parse(r.quote_json) : null,
     printed_at: r.printed_at,
     printed_by: r.printed_by || null,

@@ -11,7 +11,7 @@
 <link rel="preload" href="/fonts/manrope-var.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/styles.css?v=4">
 <script src="/vendor/pdf-lib.min.js" defer></script>
-<script src="/app.js?v=4" defer></script>
+<script src="/app.js?v=5" defer></script>
 </head>
 <body>
 <a class="skip" href="#subida">Ir a la subida de archivos</a>
@@ -92,7 +92,7 @@
           <span class="box" aria-hidden="true"></span>
           <span class="check-text">Necesito indicaciones especiales</span>
         </label>
-        <p class="help">Si lo activas, tu pedido no se imprime solo: lo reviso en el mostrador antes de que salga.</p>
+        <p class="help">Con indicaciones especiales, primero autorizas y luego preparamos tu pedido en el mostrador.</p>
         <div id="notes-wrap" hidden>
           <label class="lab" for="notes">¿Qué necesitas?</label>
           <textarea id="notes" rows="3" maxlength="400" placeholder="La imagen de 10 × 10 cm, el PDF por ambos lados, solo las páginas 2 y 3…"></textarea>
@@ -105,7 +105,7 @@
 
     <ol class="steps">
       <li><span>1</span>Sube tus archivos</li>
-      <li><span>2</span>Recibes el total exacto y confirmas</li>
+      <li><span>2</span>Confirma tu pedido. Con indicaciones especiales, el total aparece al final</li>
       <li><span>3</span>Llegas, das tu folio, pagas y te llevas tus copias</li>
     </ol>
   </div>
@@ -158,12 +158,12 @@
 
     <div class="ticket">
       <p class="folio" id="folio">—</p>
-      <div class="status" id="status"><span class="dot" aria-hidden="true"></span><span id="status-text">En fila</span></div>
+      <div class="status" id="status" role="status"><span class="dot" aria-hidden="true"></span><span id="status-text">En fila</span></div>
       <div class="claim" id="claim" hidden>
         <p class="label">Dile este código al mostrador</p>
         <p class="claim-code" id="claim-code">—</p>
-        <p class="help">En cuanto lo tecleen, tu pedido se imprime.</p>
-        <p class="claim-or" aria-hidden="true"><span>o</span></p>
+        <p class="help" id="claim-help">En cuanto lo tecleen, tu pedido se imprime.</p>
+        <p class="claim-or" id="claim-or" aria-hidden="true" hidden><span>o</span></p>
         <div class="nfc" id="nfc" hidden>
           <button class="nfc-hit" id="tap" type="button">
             <span class="nfc-waves" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -176,13 +176,23 @@
             </span>
             <span class="nfc-text" id="tap-text">Toca aquí y acerca el teléfono</span>
           </button>
-          <p class="nfc-msg" id="tap-msg" hidden></p>
+          <p class="nfc-msg" id="tap-msg" role="status" hidden></p>
         </div>
       </div>
-      <dl class="resume" id="resume"></dl>
+      <dl class="resume" id="resume">
+        <dt>Copias</dt><dd id="folio-copies">—</dd>
+        <dt>Páginas por juego</dt><dd id="folio-pages">—</dd>
+        <dt>Total</dt><dd id="folio-total" aria-live="polite">Por calcular</dd>
+      </dl>
     </div>
 
-    <p class="lead small">Guarda este folio y dalo en el mostrador. Si dejaste tu WhatsApp, te avisamos cuando esté listo.</p>
+    <div id="special-confirm" hidden>
+      <p class="fine" id="special-terms">El precio final se calcula después de aplicar tus indicaciones, según el tarifario del mostrador. Al confirmar, autorizas que preparemos e imprimamos tu pedido a ese precio.</p>
+      <button class="cta" type="button" id="confirm-variable" aria-describedby="special-terms">Confirmar e imprimir</button>
+      <p class="err" id="special-err" role="alert"></p>
+    </div>
+
+    <p class="lead small">Guarda este folio y dalo en el mostrador.</p>
     <button class="cta ghost" id="again">Subir otro pedido</button>
   </div>
 

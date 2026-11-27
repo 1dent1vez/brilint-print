@@ -1,4 +1,4 @@
-import { json, bad, bloqueoActivo, fallo, acierto } from "../../../_lib.js";
+import { json, bad, bloqueoActivo, fallo, acierto, presencial } from "../../../_lib.js";
 
 // Acercar el teléfono a la etiqueta NFC del mostrador.
 //
@@ -38,15 +38,17 @@ export async function onRequestPost({ params, env, request }) {
       return json({ error: `Etiqueta ajena ${f.fallos || 3} veces: bloqueado ${Math.ceil(f.restante / 60)} min.`,
                     bloqueado_s: f.restante }, 429);
     }
-    console.log(JSON.stringify({ evt: "tap_rechazado", folio, tag: tag.slice(0, 24) }));
+    console.log(JSON.stringify({ evt: "tap_rechazado", folio }));
     return json({ error: "Esa etiqueta no es la del mostrador.", quedan: f.quedan }, 403);
   }
 
   const row = await env.DB.prepare(
-    `SELECT folio, status, total FROM jobs WHERE folio = ?`
+    `SELECT status, review, confirmed_at, purged_at FROM jobs WHERE folio = ?`
   ).bind(folio).first();
   if (!row) return bad("No encontramos ese folio.", 404);
-  if (["queued", "printing", "done"].includes(row.status)) {
+  if (row.purged_at) return bad("El pedido ya no está disponible.", 410);
+  if (["queued", "printing", "done"].includes(row.status) ||
+      (row.review && row.confirmed_at && ["review", "reviewing", "quoting", "measuring"].includes(row.status))) {
     await acierto(env, "nfc");
     return json({ ok: true, already: true, folio, status: row.status });
   }
@@ -54,15 +56,20 @@ export async function onRequestPost({ params, env, request }) {
     // Todavía lo está ajustando el mostrador: no se puede soltar por NFC.
     return bad("El mostrador todavía está revisando tu pedido.", 409);
   }
-  if (row.status !== "held" && row.status !== "quoted") {
+  if (row.status === "review_pending") return bad("Primero confirma el pedido.", 409);
+  if (!["held", "quoted", "review_held"].includes(row.status)) {
     return bad(`Este pedido está en ${row.status}.`, 409);
   }
 
-  await env.DB.prepare(
-    `UPDATE jobs SET status = 'queued', claimed_at = NULL WHERE folio = ? AND status IN ('held','quoted')`
-  ).bind(folio).run();
+  const changed = await presencial(env, folio, row.status);
+  if (!changed) {
+    const current = await env.DB.prepare(`SELECT status FROM jobs WHERE folio = ? AND purged_at IS NULL`).bind(folio).first();
+    if (!current) return bad("El pedido ya no está disponible.", 410);
+    await acierto(env, "nfc");
+    return json({ ok: true, already: true, folio, status: current.status });
+  }
 
   await acierto(env, "nfc");
   console.log(JSON.stringify({ evt: "job_tap_released", folio }));
-  return json({ ok: true, folio, status: "queued", total: row.total, por: "nfc" });
+  return json({ ok: true, folio, status: changed.status, total: changed.status === "review" ? null : changed.total, por: "nfc" });
 }

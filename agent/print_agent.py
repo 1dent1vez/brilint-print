@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -104,13 +105,14 @@ class Agent:
         return self._req("/api/agent/release", method="POST",
                          body={"folio": folio}, timeout=60)
 
-    def ack(self, folio: str, status: str, pages: int | None = None, error: str | None = None) -> dict:
+    def ack(self, folio: str, status: str, pages: int | None = None, error: str | None = None,
+            *, timeout: int = 120) -> dict:
         if self.dry_run:
             log(f"  (dry-run) no se reporta {folio} como {status}")
             return {}
         res = self._req("/api/agent/ack", method="POST",
                         body={"folio": folio, "status": status,
-                              "pages_verified": pages, "error": error})
+                              "pages_verified": pages, "error": error}, timeout=timeout)
         return res if isinstance(res, dict) else {}
 
     def mark_sent(self, folio: str) -> bool:
@@ -120,12 +122,13 @@ class Agent:
             return True
         try:
             res = self.ack(folio, "sent")
-        except urllib.error.HTTPError as exc:
-            log(f"  ! no pude registrar el intento de {folio} (HTTP {exc.code}); sigo")
-            return True
+        except (urllib.error.URLError, ValueError) as exc:
+            raise RuntimeError("No se pudo verificar el permiso de impresión") from exc
         if res.get("print") is False:
             log(f"  ⤷ {folio}: el servidor no autoriza imprimir ({res.get('reason', 'cerrado')})")
             return False
+        if res.get("print") is not True:
+            raise RuntimeError("El servidor no confirmó el permiso de impresión")
         return True
 
     # -------- archivos -------- #
@@ -182,14 +185,17 @@ class Agent:
         scale = min(box_w / img.width, box_h / img.height)
         new = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
         img = img.resize(new, Image.LANCZOS)
-        page = Image.new(img.mode, (pw, ph), 255)
+        white = 255 if img.mode == "L" else (255, 255, 255)
+        page = Image.new(img.mode, (pw, ph), white)
         page.paste(img, ((pw - new[0]) // 2, (ph - new[1]) // 2))
         page.save(dst, "PDF", resolution=float(dpi))
         return dst
 
     def pages(self, pdf: Path) -> int:
-        expr = f"({pdf}) (r) file runpdfbegin pdfpagecount = quit"
-        r = run(["gs", "-q", "-dNODISPLAY", "-dNOSAFER", "-c", expr], timeout=120)
+        path = pdf.resolve()
+        # Pasa el nombre como dato; no lo interpola dentro de código PostScript.
+        r = run(["gs", "-q", "-dSAFER", "-dNODISPLAY", f"--permit-file-read={path}",
+                 f"-sBRILINT_INPUT={path}", "-c", "BRILINT_INPUT (r) file runpdfbegin pdfpagecount = quit"], timeout=120)
         out = (r.stdout or "").strip().splitlines()
         for line in reversed(out):
             if line.strip().isdigit():
@@ -428,10 +434,12 @@ class Agent:
             raise RuntimeError("no se pudo medir la tinta del archivo")
         return pages
 
-    def prepare(self, job: dict) -> tuple[list[tuple[Path, int]], int]:
+    def prepare(self, job: dict, *, require_ready: bool = False, measured: bool = False) -> tuple[list[tuple[Path, int]], int]:
         """Descarga y normaliza los archivos. Reutiliza lo ya preparado."""
         folio = job["folio"]
         work = self.workdir(job)
+        if measured:
+            work = work / ".medido"
         work.mkdir(parents=True, exist_ok=True)
         ready: list[tuple[Path, int]] = []
         verified = 0
@@ -439,6 +447,8 @@ class Agent:
             raw = work / f"{f['index']:02d}-{Path(f['name']).name}"
             pdf = raw.with_name(f"{raw.stem}-listo-para-imprimir.pdf")
             if not pdf.exists():
+                if measured or require_ready:
+                    raise RuntimeError("Falta el PDF medido" if measured else "Falta el PDF listo para medir")
                 if not raw.exists():
                     self.download(folio, f, raw)
                 self.to_pdf(raw, pdf, job["mode"])
@@ -497,11 +507,11 @@ class Agent:
                 except OSError:
                     continue
 
-    def fail(self, folio: str, exc: Exception) -> None:
+    def fail(self, folio: str, exc: Exception, *, preserve_work: bool = False) -> None:
         msg = str(exc)[:280]
         log(f"✗ {folio}: {msg}")
         self.ack(folio, "error", None, msg)
-        if self.dry_run:
+        if self.dry_run or preserve_work:
             return
         # Los pedidos con nota viven en el Escritorio, no en spool: se mueve la
         # carpeta donde de verdad esté, sin perder el trabajo del mostrador.
@@ -519,6 +529,22 @@ class Agent:
                 pass
 
     # -------- ciclo -------- #
+    def report_review_ready(self, folio: str) -> bool:
+        # Un timeout puede ocurrir después de persistir el ACK. No muevas los
+        # archivos: Caja puede haber liberado ya el pedido para medir.
+        for _ in range(3):
+            try:
+                result = self.ack(folio, "prepared", timeout=10)
+                if result.get("review_ready"):
+                    return result.get("status") == "reviewing"
+            except urllib.error.HTTPError as exc:
+                if 400 <= exc.code < 500 and exc.code != 429:
+                    break
+            except (OSError, ValueError):
+                pass
+        log(f"  ! No pude confirmar la carpeta de {folio}; se conserva para reintentar")
+        return False
+
     def prepare_review(self, job: dict) -> None:
         """Etapa 0: deja el pedido listo en el Escritorio y espera al mostrador."""
         folio = job["folio"]
@@ -537,19 +563,33 @@ class Agent:
                 f"Cuando este listo:  python3 print_agent.py --liberar {folio}\n",
                 encoding="utf-8",
             )
-            self.notify(f"Pedido {folio} por revisar",
-                        f"{job['copies']} copia(s) · {job.get('notes', '')[:120]}")
-            log(f"  → {folder}")
         except Exception as exc:  # noqa: BLE001
             self.fail(folio, exc)
+            return
+        if job.get("review_authorized") and not self.dry_run and not self.report_review_ready(folio):
+            return
+        self.notify(f"Pedido {folio} por revisar",
+                    f"{job['copies']} copia(s) · {job.get('notes', '')[:120]}")
+        log(f"  → {folder}")
 
     def measure_job(self, job: dict) -> None:
         """Etapa 1: medir la tinta de cada página y devolver la cotización."""
         folio = job["folio"]
+        special = bool(job.get("review_authorized"))
         log(f"Midiendo {folio} · {len(job['files'])} archivo(s) · "
             f"{'color' if job['mode'] == 'color' else 'B/N'}")
         try:
-            files, verified = self.prepare(job)
+            files, verified = self.prepare(job, require_ready=special)
+            if special:
+                # Solo esta copia se mide y se manda a CUPS, incluso al reimprimir.
+                snapshot = self.workdir(job) / ".medido"
+                snapshot.mkdir(exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=snapshot) as temp:
+                    for pdf, _ in files:
+                        staged = Path(temp) / pdf.name
+                        shutil.copyfile(pdf, staged)
+                        staged.replace(snapshot / pdf.name)
+                files, verified = self.prepare(job, measured=True)
             pages: list[dict] = []
             for pdf, _n in files:
                 pages.extend(self.measure(pdf))
@@ -558,16 +598,17 @@ class Agent:
             res = self.quote(folio, pages)
             log(f"✓ {folio} cotizado · {len(pages)} pág. · ${res.get('total', '?')}")
         except Exception as exc:  # noqa: BLE001
-            self.fail(folio, exc)
+            self.fail(folio, exc, preserve_work=special)
 
     def print_job(self, job: dict) -> None:
         """Etapa 2: imprimir un pedido ya confirmado por el cliente."""
         folio = job["folio"]
+        special = bool(job.get("review_authorized"))
         log(f"Imprimiendo {folio} · {job['copies']}× · "
             f"{'color' if job['mode'] == 'color' else 'B/N'} · {len(job['files'])} archivo(s)")
         work = self.workdir(job)
         try:
-            files, verified = self.prepare(job)
+            files, verified = self.prepare(job, measured=special)
             # Si el mostrador cerró el pedido mientras preparábamos los archivos
             # (lo imprimió a mano), no se manda papel doble.
             if not self.mark_sent(folio):
@@ -584,7 +625,7 @@ class Agent:
             self.ack(folio, "done", verified)
             log(f"✓ {folio} listo · {verified} páginas por juego")
         except Exception as exc:  # noqa: BLE001
-            self.fail(folio, exc)
+            self.fail(folio, exc, preserve_work=special)
 
     def loop(self) -> None:
         interval = int(self.cfg.get("poll_seconds", 8))

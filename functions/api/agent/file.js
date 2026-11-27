@@ -8,8 +8,12 @@ export async function onRequestGet({ request, env }) {
   const folio = String(url.searchParams.get("folio") || "");
   const index = parseInt(url.searchParams.get("i") || "0", 10);
 
-  const row = await env.DB.prepare(`SELECT files_json FROM jobs WHERE folio = ?`).bind(folio).first();
+  const row = await env.DB.prepare(`SELECT files_json, status, purged_at FROM jobs WHERE folio = ?`).bind(folio).first();
   if (!row) return bad("Pedido no encontrado.", 404);
+  if (row.purged_at) return bad("El archivo ya no está disponible.", 410);
+  if (["review_pending", "review_held"].includes(row.status)) {
+    return bad("El pedido espera confirmación y presencia en el mostrador.", 409);
+  }
 
   let files = [];
   try { files = JSON.parse(row.files_json); } catch { return bad("Pedido corrupto.", 500); }

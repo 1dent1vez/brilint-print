@@ -27,7 +27,8 @@ export async function onRequestPost({ request, env }) {
   ).bind(staleMeasure).run();
   await env.DB.prepare(
     `UPDATE jobs SET status = 'review', claimed_at = NULL
-      WHERE status = 'reviewing' AND claimed_at IS NOT NULL AND claimed_at < ?`
+      WHERE status = 'reviewing' AND claimed_at IS NOT NULL AND claimed_at < ?
+        AND json_extract(plan_json, '$.prepared_at') IS NULL`
   ).bind(staleMeasure).run();
   await env.DB.prepare(
     `UPDATE jobs
@@ -42,9 +43,10 @@ export async function onRequestPost({ request, env }) {
   const res = await env.DB.prepare(
     `UPDATE jobs SET status = ?, claimed_at = ?
       WHERE folio = (
-        SELECT folio FROM jobs WHERE status = ? ORDER BY created_at LIMIT 1
+        SELECT folio FROM jobs WHERE status = ? AND purged_at IS NULL ORDER BY created_at LIMIT 1
       ) AND status = ?
-      RETURNING folio, created_at, mode, copies, pages, total, customer, phone, notes, files_json, quote_json, review`
+      RETURNING folio, created_at, mode, copies, pages, total, customer, phone, notes, files_json, quote_json, review,
+                confirmed_at, json_extract(plan_json, '$.price_terms') AS price_terms`
   ).bind(to, now, from, from).all();
 
   const row = res.results && res.results[0];
@@ -66,6 +68,7 @@ export async function onRequestPost({ request, env }) {
       phone: row.phone,
       notes: row.notes,
       review: row.review || 0,
+      review_authorized: Boolean(row.review && row.confirmed_at && row.price_terms === "variable"),
       quote: row.quote_json ? JSON.parse(row.quote_json) : null,
       files: files.map((f, i) => ({ index: i, name: f.name, pages: f.pages, size: f.size, type: f.type })),
     },

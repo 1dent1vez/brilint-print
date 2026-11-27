@@ -135,9 +135,10 @@ PAGE = """<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 <footer><span id="pie">—</span><span>Se apaga solo si no se usa</span></footer>
 <script>
-const LBL={review:"Por revisar",reviewing:"En revisión",quoting:"Cotizando",measuring:"Midiendo",held:"Espera código",
+const LBL={review_pending:"Espera confirmación",review_held:"Espera presencia",review:"Por revisar",reviewing:"En revisión",quoting:"Cotizando",measuring:"Midiendo",held:"Espera código",
            quoted:"Cotizado",queued:"En fila",printing:"Imprimiendo",done:"Impreso",error:"Error"};
 const fmt=n=>new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN"}).format(n||0);
+const html=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let IMP=null;
 function toast(t,malo){const e=document.getElementById("toast");e.textContent=t;
   e.classList.toggle("malo",!!malo);e.classList.add("on");setTimeout(()=>e.classList.remove("on"),3200);}
@@ -190,9 +191,11 @@ async function cargar(){
 }
 function acciones(j){
   const a=[];
-  if(["review","reviewing"].includes(j.status)){
+  if(j.status==="review_held") a.push(`<span class="nota">Pide el código al cliente para empezar la preparación.</span>`);
+  if(["review","reviewing"].includes(j.status)&&j.review_authorized&&!j.review_ready) a.push(`<span class="nota">El agente todavía está preparando la carpeta.</span>`);
+  else if(["review","reviewing"].includes(j.status)){
     a.push(`<button class="act ghost" onclick="accion('${j.folio}','abrir')">Abrir carpeta</button>`);
-    a.push(`<button class="act primary" onclick="accion('${j.folio}','liberar')">Liberar y cotizar</button>`);
+    a.push(`<button class="act primary" onclick="accion('${j.folio}','liberar')">${j.review_authorized?"Medir e imprimir":"Liberar y cotizar"}</button>`);
     a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya se imprimió a mano</button>`);
   }
   if(j.status==="quoted"){
@@ -213,8 +216,10 @@ function acciones(j){
   }
   if(j.status==="error"){
     a.push(`<button class="act ghost" onclick="accion('${j.folio}','abrir')">Abrir carpeta</button>`);
-    a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya salió · cobrar</button>`);
-    a.push(`<button class="act malo" onclick="accion('${j.folio}','reimprimir')">Reimprimir</button>`);
+    if(j.quote){
+      a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya salió · cobrar</button>`);
+      a.push(`<button class="act malo" onclick="accion('${j.folio}','reimprimir')">Reimprimir</button>`);
+    }
     a.push(`<button class="act" onclick="liberarImpresora()">Liberar impresora</button>`);
   }
   if(j.status==="done"){
@@ -229,7 +234,7 @@ function pintar(jobs){
     const cls=["done"].includes(j.status)?"job listo":j.status==="error"?"job roto"
       :(["review","reviewing","quoted"].includes(j.status)?"job nuevo":"job");
     const lines=(j.quote&&j.quote.lines)||[];
-    const fallo=j.error?`<div class="fallo"><span class="lbl">Por qué no salió</span>${j.error}
+    const fallo=j.error?`<div class="fallo"><span class="lbl">Por qué no salió</span>${html(j.error)}
       ${j.attempts?`<div class="nota" style="margin-top:6px">Se mandó ${j.attempts} vez/veces a la impresora · ${hace(j.attempted_at)}</div>`:""}</div>`:"";
     return `<div class="${cls}">
       <div class="top">
@@ -246,7 +251,7 @@ function pintar(jobs){
         </div>
         <div class="total"><b>${j.total?fmt(j.total):"—"}</b><span>Total</span></div>
       </div>
-      ${j.notes?`<div class="notes"><span class="lbl">Indicaciones del cliente</span>${j.notes}</div>`:""}
+      ${j.notes?`<div class="notes"><span class="lbl">Indicaciones del cliente</span>${html(j.notes)}</div>`:""}
       ${fallo}
       ${lines.length?`<ul class="lines">${lines.map(x=>`<li><span>${x.label} · ${x.pages} pág.</span><span>${fmt(x.subtotal)}</span></li>`).join("")}</ul>`:""}
       <div class="acts">${acciones(j)}</div>
@@ -281,8 +286,9 @@ async function liberarCodigo(){
     if(!r.ok) throw new Error(d.error||"no encontré ese código");
     bar.classList.remove("err");
     inp.value="";
-    note.textContent=d.already?`Ya iba en camino · ${d.folio}`:`${d.folio} → imprimiendo`;
-    toast(d.already?`${d.folio} ya estaba liberado`:`${d.folio} · a la impresora`);
+    const msg=d.already?"ya estaba liberado":d.status==="review"?"autorizado · a preparar":"a la impresora";
+    note.textContent=`${d.folio} · ${msg}`;
+    toast(`${d.folio} · ${msg}`);
     setTimeout(()=>{cargar();cargarImpresora();},700);
   }catch(e){
     bar.classList.add("err");

@@ -17,33 +17,37 @@ export async function onRequestPost({ request, env }) {
   const doneCut = new Date(now - DONE_AFTER_MS).toISOString();
   const oldCut = new Date(now - ABANDONED_AFTER_MS).toISOString();
 
+  const at = new Date(now).toISOString();
+  // Marca primero: desde este momento no se puede liberar ni reclamar el folio.
   const rows = all
     ? await env.DB.prepare(
-        `SELECT folio, files_json FROM jobs WHERE files_json IS NOT NULL AND files_json != '[]'`
-      ).all()
+        `UPDATE jobs SET purged_at = COALESCE(purged_at, ?)
+          WHERE files_json IS NOT NULL AND files_json != '[]' RETURNING folio, files_json`
+      ).bind(at).all()
     : await env.DB.prepare(
-        `SELECT folio, files_json FROM jobs
-          WHERE files_json IS NOT NULL AND files_json != '[]' AND purged_at IS NULL
+        `UPDATE jobs SET purged_at = COALESCE(purged_at, ?)
+          WHERE files_json IS NOT NULL AND files_json != '[]'
             AND (
-              (status IN ('done','error') AND COALESCE(printed_at, created_at) < ?)
-              OR (status IN ('quoting','measuring','quoted','review','reviewing','held','queued') AND created_at < ?)
-            )`
-      ).bind(doneCut, oldCut).all();
+              purged_at IS NOT NULL
+              OR (status IN ('done','error') AND COALESCE(printed_at, created_at) < ?)
+              OR (status IN ('quoting','measuring','quoted','review_pending','review_held','review','reviewing','held','queued') AND created_at < ?)
+            ) RETURNING folio, files_json`
+      ).bind(at, doneCut, oldCut).all();
 
   let purged = 0;
   let deleted = 0;
   const folios = [];
   for (const row of rows.results || []) {
     let files = [];
+    let retry = false;
     try { files = JSON.parse(row.files_json); } catch { files = []; }
     for (const f of files) {
       if (f && f.key) {
-        try { await env.BUCKET.delete(f.key); deleted += 1; } catch { /* ya no estaba */ }
+        try { await env.BUCKET.delete(f.key); deleted += 1; } catch { retry = true; }
       }
     }
-    await env.DB.prepare(
-      `UPDATE jobs SET files_json = '[]', purged_at = ? WHERE folio = ?`
-    ).bind(new Date().toISOString(), row.folio).run();
+    if (retry) continue;
+    await env.DB.prepare(`UPDATE jobs SET files_json = '[]' WHERE folio = ?`).bind(row.folio).run();
     purged += 1;
     folios.push(row.folio);
   }

@@ -17,7 +17,10 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+from email.message import Message
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -76,6 +79,56 @@ class ColaFalsa(unittest.TestCase):
         return p
 
     # ---- casos ---- #
+    def test_preparacion_que_pierde_el_ack_conserva_el_pdf(self):
+        root = self.tmp / "review"
+        folder = root / "261127-TEST"
+        folder.mkdir(parents=True)
+        pdf = folder / "00-foto-listo-para-imprimir.pdf"
+        pdf.write_bytes(b"prueba")
+        job = {"folio": folder.name, "review": 1, "review_authorized": True, "mode": "bw", "copies": 1}
+        def respond(_folio, status, *args, **kwargs):
+            if status == "prepared":
+                raise TimeoutError("respuesta perdida")
+            return {"status": "quoting"}
+        with (patch.object(print_agent, "REVIEW_HOME", root),
+              patch.object(self.agent, "prepare", return_value=([(pdf, 1)], 1)),
+              patch.object(self.agent, "ack", side_effect=respond) as ack,
+              patch.object(self.agent, "notify")):
+            self.agent.prepare_review(job)
+        self.assertTrue(pdf.is_file())
+        self.assertTrue((folder / "notas.txt").is_file())
+        self.assertTrue(all(call.args[1] == "prepared" for call in ack.call_args_list))
+
+    def test_no_envia_sin_respuesta_explicita_del_servidor(self):
+        error = urllib.error.HTTPError(self.agent.base, 503, "indisponible", Message(), None)
+        with patch.object(self.agent, "ack", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "permiso de impresión"):
+                self.agent.mark_sent("261127-TEST")
+        with patch.object(self.agent, "ack", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "permiso de impresión"):
+                self.agent.mark_sent("261127-TEST")
+        with patch.object(self.agent, "ack", return_value={"print": False}):
+            self.assertFalse(self.agent.mark_sent("261127-TEST"))
+
+    def test_cuenta_pdf_con_parentesis_suelto_en_el_nombre(self):
+        source = ROOT.parent / "samples" / "documento-3-paginas.pdf"
+        pdf = self.tmp / "presupuesto ) final.pdf"
+        shutil.copyfile(source, pdf)
+        self.assertEqual(self.agent.pages(pdf), 3)
+
+    def test_imagen_color_no_llena_los_margenes_de_rojo(self):
+        from PIL import Image
+
+        jpg = self.tmp / "foto.jpg"
+        pdf = self.tmp / "foto.pdf"
+        preview = self.tmp / "prueba.png"
+        Image.new("RGB", (80, 100), "blue").save(jpg)
+        self.agent.image_to_pdf(jpg, pdf, "color")
+        proc = print_agent.run(["gs", "-q", "-sDEVICE=png16m", "-r24", "-o", str(preview), str(pdf)])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with Image.open(preview) as page:
+            self.assertEqual(page.getpixel((2, 2)), (255, 255, 255))
+
     def test_trabajo_ajeno_atorado_no_falla_al_siguiente(self):
         """El error encadenado: un trabajo de la impresión a mano se queda en la
         cola y antes hacía fallar todos los pedidos que llegaban después."""
