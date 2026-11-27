@@ -300,11 +300,22 @@
       el.claim.hidden = false;
       // Con Web NFC (Android) basta acercar el teléfono a la etiqueta; en
       // iPhone el botón no aparece y el cliente dicta el código.
-      if ("NDEFReader" in window && data.status !== "done") {
-        // Solo si el mostrador ya registró su etiqueta; si no, no se muestra nada.
+      const conNfc = "NDEFReader" in window;
+      if (!conNfc) {
+        // Sin Web NFC (iPhone, o el navegador de dentro de WhatsApp/Facebook)
+        // el único camino es dictar el código. Se dice, no se deja en blanco.
+        el.tapMsg.hidden = false;
+        el.tapMsg.textContent = /Android/i.test(navigator.userAgent)
+          ? "Abre esta página en Chrome (no dentro de WhatsApp) para imprimir acercando el teléfono."
+          : "Este teléfono no imprime con NFC: dicta el código en el mostrador.";
+      } else if (data.status !== "done") {
+        // Solo si el mostrador ya registró su etiqueta.
         fetch(`/api/jobs/${encodeURIComponent(data.folio || state.folio)}`)
           .then((r) => r.json())
-          .then((d) => { if (d.nfc) el.tap.hidden = false; })
+          .then((d) => {
+            if (d.nfc) el.tap.hidden = false;
+            else { el.tapMsg.hidden = false; el.tapMsg.textContent = "El mostrador todavía no registra su etiqueta: dicta el código."; }
+          })
           .catch(() => {});
       }
     }
