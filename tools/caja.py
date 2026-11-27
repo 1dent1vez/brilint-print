@@ -204,6 +204,7 @@ function acciones(j){
     a.push(`<span class="nota">Esperando que el cliente dicte su código</span>`);
     a.push(`<button class="act ghost" onclick="accion('${j.folio}','abrir')">Abrir carpeta</button>`);
     a.push(`<button class="act" onclick="accion('${j.folio}','liberar-folio')">Liberar igual</button>`);
+    a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya se imprimió a mano</button>`);
   }
   if(["queued","printing"].includes(j.status)){
     a.push(`<span class="act ghost" style="cursor:default">Saliendo…</span>`);

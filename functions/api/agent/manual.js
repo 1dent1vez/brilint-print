@@ -7,7 +7,7 @@ import { json, bad, isAgent } from "../../_lib.js";
 //                queda en error. Es el caso normal cuando el cliente trae
 //                indicaciones y alguien lo atiende a mano.
 // requeue      · se vuelve a mandar a la fila después de un error real.
-const CLOSABLE = ["review", "reviewing", "quoting", "measuring", "quoted", "queued", "printing", "error"];
+const CLOSABLE = ["review", "reviewing", "quoting", "measuring", "quoted", "held", "queued", "printing", "error"];
 
 export async function onRequestPost({ request, env }) {
   if (!isAgent(request, env)) return bad("No autorizado.", 401);
