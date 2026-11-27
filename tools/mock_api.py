@@ -88,7 +88,6 @@ def parse_multipart(body: bytes, boundary: bytes) -> list[dict]:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "mock-pages/1.0"
-    PIN = "1234"      # código del mostrador en el mock: siempre el mismo
 
     def log_message(self, fmt, *args):  # silencioso
         pass
@@ -129,18 +128,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({k: job.get(k) for k in
                                    ("folio", "created_at", "status", "mode", "copies",
                                     "pages", "pages_verified", "total", "printed_at", "quote")})
-
-        if path == "/api/pin":
-            db = load_db()
-            modo = db.get("pin_modo", "cerrado")
-            return self.send_json({"modo": modo, "pide_codigo": modo != "abierto"})
-
-        if path == "/api/agent/code":
-            if not self.agent_ok():
-                return self.send_json({"error": "No autorizado."}, 401)
-            db = load_db()
-            return self.send_json({"code": self.PIN, "expires_in": 300, "rotacion_s": 300,
-                                   "modo": db.get("pin_modo", "cerrado")})
 
         if path == "/api/agent/jobs":
             if not self.agent_ok():
@@ -242,18 +229,10 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 return self.send_json({"error": "No encontramos ese folio."}, 404)
             if job["status"] == "quoted":
-                job["status"] = "queued"
+                job["status"] = "held"          # espera el código del cliente
                 save_db(db)
-            return self.send_json({"folio": job["folio"], "status": job["status"], "total": job["total"]})
-        if u.path == "/api/agent/code":
-            if not self.agent_ok():
-                return self.send_json({"error": "No autorizado."}, 401)
-            payload = json.loads(body or b"{}")
-            db = load_db()
-            db["pin_modo"] = "abierto" if payload.get("modo") == "abierto" else "cerrado"
-            save_db(db)
-            return self.send_json({"ok": True, "modo": db["pin_modo"], "code": self.PIN,
-                                   "expires_in": 300, "rotacion_s": 300})
+            return self.send_json({"folio": job["folio"], "status": job["status"],
+                                   "total": job["total"], "code": job.get("claim_code")})
         if u.path == "/api/agent/release":
             if not self.agent_ok():
                 return self.send_json({"error": "No autorizado."}, 401)
@@ -296,6 +275,20 @@ class Handler(BaseHTTPRequestHandler):
                 job["printed_at"] = None
                 save_db(db)
                 return self.send_json({"ok": True, "folio": job["folio"], "status": "queued"})
+            if action == "release":
+                codigo = str(payload.get("code") or "").strip()
+                folio_j = str(payload.get("folio") or "").upper()
+                job = next((j for j in db["jobs"]
+                            if j["status"] in ("held", "quoted")
+                            and ((codigo and j.get("claim_code") == codigo)
+                                 or (folio_j and j["folio"] == folio_j))), None)
+                if not job:
+                    return self.send_json({"error": "Ningún pedido esperando con ese código."}, 404)
+                job["status"] = "queued"
+                job["claimed_at"] = None
+                save_db(db)
+                return self.send_json({"ok": True, "folio": job["folio"], "status": "queued",
+                                       "total": job.get("total")})
             return self.send_json({"error": "acción desconocida"}, 400)
         if u.path == "/api/agent/ack":
             if not self.agent_ok():
@@ -352,11 +345,12 @@ class Handler(BaseHTTPRequestHandler):
         if total_bytes > PRICES["max_mb"] * 1024 * 1024:
             return self.send_json({"error": "El pedido pasa del límite."}, 413)
 
-        # Igual que en producción: sin código del mostrador no se guarda nada.
-        if load_db().get("pin_modo", "cerrado") != "abierto":
-            if fields.get("pin", "").strip() != self.PIN:
-                return self.send_json(
-                    {"error": "Ese código no es el de ahora. Está en la pantalla del mostrador."}, 403)
+        # Código del cliente: 4 dígitos que él dicta en el mostrador.
+        abiertos = {j.get("claim_code") for j in load_db()["jobs"]
+                    if j["status"] not in ("done", "error")}
+        claim = "%04d" % random.randrange(10000)
+        while claim in abiertos:
+            claim = "%04d" % random.randrange(10000)
 
         mode = fields.get("mode", "bw")
         copies = int(fields.get("copies", 1))
@@ -388,12 +382,15 @@ class Handler(BaseHTTPRequestHandler):
             "customer": fields.get("customer", ""), "phone": fields.get("phone", ""),
             "notes": fields.get("notes", ""), "files": stored,
             "review": 1 if (fields.get("review") == "1" and len(fields.get("notes", "")) >= 4) else 0,
+            "claim_code": claim,
             "claimed_at": None, "printed_at": None, "printed_by": None, "error": None,
             "attempts": 0, "attempted_at": None,
         })
         save_db(db)
         return self.send_json({
-            "folio": folio, "status": "quoting", "mode": mode, "copies": copies,
+            "folio": folio, "code": claim,
+            "status": "review" if (fields.get("review") == "1" and len(fields.get("notes", "")) >= 4) else "quoting",
+            "mode": mode, "copies": copies,
             "pages": total_pages,
             "currency": PRICES["currency"],
             "files": [{"name": s["name"], "pages": s["pages"]} for s in stored],

@@ -90,14 +90,17 @@ PAGE = """<!DOCTYPE html>
   .printer .sp{flex:1}
   .printer b{display:block;font-size:14px}
   .printer small{color:var(--gray);font-size:12px}
-  .codebox{display:flex;align-items:center;gap:18px;border:1px solid var(--line);
-           border-radius:10px;padding:14px 20px;background:var(--panel)}
-  .codebox.abierto{border-color:#6b4a12;background:#150f07}
-  .codebox small{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--gray)}
-  .codebox .code{font:700 46px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
-                 letter-spacing:.18em;color:var(--lime);font-variant-numeric:tabular-nums}
-  .codebox.abierto .code{color:var(--red)}
-  .codebox .sp{flex:1}
+  .claimbar{display:flex;align-items:center;gap:16px;border:1px solid var(--line);
+            border-radius:10px;padding:14px 18px;background:var(--panel)}
+  .claimbar small{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--gray)}
+  .claimbar input{width:190px;padding:10px 12px;background:var(--black);color:var(--lime);
+    border:1px solid #2f3a1c;border-radius:8px;text-align:center;
+    font:700 34px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.22em;
+    font-variant-numeric:tabular-nums}
+  .claimbar input::placeholder{color:#2a2e36;letter-spacing:.22em}
+  .claimbar input:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+  .claimbar .sp{flex:1}
+  .claimbar.err{border-color:#5d2b26;background:#150d0c}
   footer{position:fixed;left:0;right:0;bottom:0;padding:10px 24px;background:var(--black);
          border-top:1px solid var(--line);color:var(--gray);font-size:12px;display:flex;gap:16px}
   .toast{position:fixed;bottom:52px;left:50%;transform:translateX(-50%);background:var(--lime);
@@ -113,14 +116,13 @@ PAGE = """<!DOCTYPE html>
   <button onclick="cargar();cargarImpresora()">Actualizar</button>
 </header>
 <main>
-  <section class="codebox" id="codebox">
-    <div>
-      <small>Código del mostrador</small>
-      <div class="code" id="codigo">----</div>
-    </div>
-    <div><small id="codeleft">—</small></div>
+  <section class="claimbar" id="claimbar">
+    <div><small>Código del cliente</small></div>
+    <input id="codigo" inputmode="numeric" maxlength="4" placeholder="0000"
+           autocomplete="off" aria-label="Código del cliente">
+    <button class="act primary" onclick="liberarCodigo()">Liberar e imprimir</button>
     <span class="sp"></span>
-    <button class="act" id="modobtn" onclick="cambiarModo()">Aceptar envíos de fuera</button>
+    <span class="nota" id="codenote">lo dicta el cliente y aquí se teclea</span>
   </section>
   <section class="printer" id="imp">
     <span class="pdot"></span>
@@ -133,7 +135,7 @@ PAGE = """<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 <footer><span id="pie">—</span><span>Se apaga solo si no se usa</span></footer>
 <script>
-const LBL={review:"Por revisar",reviewing:"En revisión",quoting:"Cotizando",measuring:"Midiendo",
+const LBL={review:"Por revisar",reviewing:"En revisión",quoting:"Cotizando",measuring:"Midiendo",held:"Espera código",
            quoted:"Cotizado",queued:"En fila",printing:"Imprimiendo",done:"Impreso",error:"Error"};
 const fmt=n=>new Intl.NumberFormat("es-MX",{style:"currency",currency:"MXN"}).format(n||0);
 let IMP=null;
@@ -198,6 +200,11 @@ function acciones(j){
     a.push(`<button class="act primary" onclick="accion('${j.folio}','imprimir')">Confirmar e imprimir</button>`);
     a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya se imprimió a mano</button>`);
   }
+  if(j.status==="held"){
+    a.push(`<span class="nota">Esperando que el cliente dicte su código</span>`);
+    a.push(`<button class="act ghost" onclick="accion('${j.folio}','abrir')">Abrir carpeta</button>`);
+    a.push(`<button class="act" onclick="accion('${j.folio}','liberar-folio')">Liberar igual</button>`);
+  }
   if(["queued","printing"].includes(j.status)){
     a.push(`<span class="act ghost" style="cursor:default">Saliendo…</span>`);
     a.push(`<button class="act hecho" onclick="accion('${j.folio}','ya-salio')">Ya salió</button>`);
@@ -259,52 +266,43 @@ async function accion(folio,accion){
     setTimeout(()=>{cargar();cargarImpresora();},800);
   }catch(e){toast("Error: "+e.message,true);}
 }
-function mmss(s){s=Math.max(0,s|0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;}
-let PIN=null,pinLeft=0;
-async function cargarCodigo(){
-  try{
-    const r=await fetch("/api/pin");const d=await r.json();
-    PIN=d; pinLeft=d.expires_in||0;
-    const abierto=d.modo==="abierto";
-    document.getElementById("codebox").classList.toggle("abierto",abierto);
-    document.getElementById("codigo").textContent=abierto?"ABIERTO":(d.code||"----");
-    document.getElementById("codeleft").textContent=abierto
-      ? "aceptando envíos de fuera"
-      : `cambia en ${mmss(pinLeft)}`;
-    document.getElementById("modobtn").textContent=abierto
-      ? "Cerrar envíos de fuera"
-      : "Aceptar envíos de fuera (1 h)";
-  }catch(e){
-    const el=document.getElementById("codeleft");
-    if(el) el.textContent="sin código · revisa la conexión";
-  }
-}
-async function cambiarModo(){
-  const abierto=PIN&&PIN.modo==="abierto";
-  const msg=abierto
-    ? "Se vuelve a pedir el código a todos. ¿Sigo?"
-    : "Durante 1 hora se van a poder mandar pedidos desde fuera del local y se van a imprimir. ¿Sigo?";
-  if(!confirm(msg))return;
+async function liberarCodigo(){
+  const inp=document.getElementById("codigo");
+  const code=(inp.value||"").replace(/[^0-9]/g,"").slice(0,4);
+  const bar=document.getElementById("claimbar");
+  const note=document.getElementById("codenote");
+  if(code.length!==4){bar.classList.add("err");note.textContent="Faltan dígitos";return;}
   try{
     const r=await fetch("/accion",{method:"POST",headers:{"content-type":"application/json"},
-      body:JSON.stringify({accion:"modo-fuera",modo:abierto?"cerrado":"abierto"})});
+      body:JSON.stringify({accion:"liberar-codigo",codigo:code})});
     const d=await r.json();
-    if(!r.ok) throw new Error(d.error||"falló");
-    toast(abierto?"Se vuelve a pedir el código":"Aceptando envíos de fuera por 1 hora");
-    setTimeout(()=>{cargarCodigo();cargar();},600);
-  }catch(e){toast("Error: "+e.message,true);}
+    if(!r.ok) throw new Error(d.error||"no encontré ese código");
+    bar.classList.remove("err");
+    inp.value="";
+    note.textContent=d.already?`Ya iba en camino · ${d.folio}`:`${d.folio} → imprimiendo`;
+    toast(d.already?`${d.folio} ya estaba liberado`:`${d.folio} · a la impresora`);
+    setTimeout(()=>{cargar();cargarImpresora();},700);
+  }catch(e){
+    bar.classList.add("err");
+    note.textContent=e.message;
+    inp.select();
+  }
 }
-cargar();cargarImpresora();cargarCodigo();
+document.addEventListener("DOMContentLoaded",()=>{
+  const inp=document.getElementById("codigo");
+  if(!inp) return;
+  inp.addEventListener("input",()=>{
+    const limpio=(inp.value||"").replace(/[^0-9]/g,"").slice(0,4);
+    if(inp.value!==limpio) inp.value=limpio;
+    document.getElementById("claimbar").classList.remove("err");
+    if(limpio.length===4) liberarCodigo();
+  });
+  inp.addEventListener("keydown",e=>{if(e.key==="Enter") liberarCodigo();});
+  inp.focus();
+});
+cargar();cargarImpresora();
 setInterval(()=>{cargar();},5000);
 setInterval(()=>{cargarImpresora();},8000);
-setInterval(()=>{cargarCodigo();},20000);
-setInterval(()=>{
-  if(!PIN||PIN.modo==="abierto"||pinLeft<=0)return;
-  pinLeft--;
-  const el=document.getElementById("codeleft");
-  if(el) el.textContent=`cambia en ${mmss(pinLeft)}`;
-  if(pinLeft<=0) cargarCodigo();
-},1000);
 </script></body></html>
 """
 
@@ -418,9 +416,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, impresora_info())
             except Exception as e:  # noqa: BLE001
                 return self._json(500, {"error": str(e)[:160]})
-        if self.path == "/api/pin":
-            code, data = api("/api/agent/code")
-            return self._json(code if code < 500 else 502, data)
         if self.path.startswith("/api/pedidos"):
             code, data = api("/api/agent/jobs?limit=14")
             return self._json(code if code < 500 else 502, data)
@@ -464,9 +459,12 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json(500, {"error": str(e)[:160]})
             return self._json(500 if res.get("error") else 200, res)
-        if accion == "modo-fuera":
-            modo = "abierto" if payload.get("modo") == "abierto" else "cerrado"
-            code, data = api("/api/agent/code", "POST", {"modo": modo, "minutos": 60})
+        if accion == "liberar-codigo":
+            codigo = str(payload.get("codigo") or "").strip()
+            code, data = api("/api/agent/manual", "POST", {"action": "release", "code": codigo})
+            return self._json(code, data)
+        if accion == "liberar-folio":
+            code, data = api("/api/agent/manual", "POST", {"action": "release", "folio": folio})
             return self._json(code, data)
         return self._json(400, {"error": f"acción desconocida: {accion}"})
 

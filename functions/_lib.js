@@ -17,6 +17,12 @@ export function makeFolio(now = new Date()) {
   return `${y}${m}${d}-${tail}`;
 }
 
+/** Código de 4 dígitos que el cliente dicta en el mostrador para que se imprima. */
+export function makeClaimCode() {
+  const n = crypto.getRandomValues(new Uint32Array(1))[0] % 10000;
+  return String(n).padStart(4, "0");
+}
+
 /** Nombre de archivo seguro para R2 (conserva la extensión y el original para el humano). */
 export function safeName(name) {
   const base = String(name || "archivo").normalize("NFKD").replace(/[\u0300-\u036f]/g, "");

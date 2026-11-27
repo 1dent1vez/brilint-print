@@ -15,7 +15,6 @@
     quote: null,
     poll: null,
     waitTimer: null,
-    pideCodigo: true,
   };
 
   const el = {
@@ -24,13 +23,13 @@
     count: $("filecount"),
     copies: $("copies"), minus: $("copies-minus"), plus: $("copies-plus"),
     notes: $("notes"), needsNotes: $("needsNotes"), notesWrap: $("notes-wrap"),
-    pin: $("pin"), pinBlock: $("pin-block"), pinHelp: $("pin-help"), pinOpen: $("pin-open"),
     sendBtn: $("send"), err: $("err"),
     bar: $("bar"), barFill: $("bar-fill"), sendSub: $("send-sub"), sendMeta: $("send-meta"),
     measuring: $("measuring"), quoteTicket: $("quote-ticket"), quoteTitle: $("quote-title"),
     quoteSub: $("quote-sub"), qTotal: $("q-total"), qLines: $("q-lines"), qMeta: $("q-meta"),
     confirm: $("confirm"), quoteErr: $("quote-err"), quoteWait: $("quote-wait"),
     folio: $("folio"), status: $("status"), statusText: $("status-text"), resume: $("resume"),
+    claim: $("claim"), claimCode: $("claim-code"),
     again: $("again"), maxmb: $("maxmb"),
   };
 
@@ -125,12 +124,9 @@
 
     const tooBig = totalBytes() > state.prices.max_mb * 1024 * 1024;
     const needsText = el.needsNotes.checked && el.notes.value.trim().length < 4;
-    const pinOk = !state.pideCodigo || el.pin.value.replace(/\D/g, "").length === 4;
-    el.sendBtn.disabled = !(ok > 0 && !tooBig && !state.uploading && !needsText && pinOk);
+    el.sendBtn.disabled = !(ok > 0 && !tooBig && !state.uploading && !needsText);
     el.sendBtn.textContent = state.uploading ? "Enviando…" : "Enviar y cotizar";
-    el.err.textContent = errMsg
-      || (needsText ? "Escribe qué necesitas, o desactiva la casilla." : "")
-      || (!pinOk && state.files.length ? "Escribe los 4 dígitos que están en la pantalla del mostrador." : "");
+    el.err.textContent = errMsg || (needsText ? "Escribe qué necesitas, o desactiva la casilla." : "");
   }
 
   /* ---------------- subida ---------------- */
@@ -143,25 +139,7 @@
     fd.append("pages", JSON.stringify(okFiles.map((f) => f.pages)));
     fd.append("notes", el.notes.value.trim());
     if (el.needsNotes.checked) fd.append("review", "1");
-    fd.append("pin", el.pin.value.replace(/\D/g, ""));
     return fd;
-  }
-
-  /* ---------------- código del mostrador ---------------- */
-  async function loadPinMode() {
-    try {
-      const r = await fetch("/api/pin", { headers: { accept: "application/json" } });
-      const d = await r.json();
-      state.pideCodigo = d.pide_codigo !== false;
-    } catch {
-      state.pideCodigo = true;   // si no se sabe, se pide: mejor un paso de más que papel regalado
-    }
-    el.pin.hidden = !state.pideCodigo;
-    el.pinBlock.classList.toggle("is-open", !state.pideCodigo);
-    el.pinHelp.hidden = !state.pideCodigo;
-    el.pinOpen.hidden = state.pideCodigo;
-    if (!state.pideCodigo) el.pin.value = "";
-    render();
   }
 
   function screen(name) {
@@ -316,7 +294,8 @@
   function showDone(data) {
     screen("done");
     el.folio.textContent = data.folio || state.folio;
-    setStatus(data.status || "queued");
+    setStatus(data.status || "held");
+    if (data.code && el.claim) { el.claimCode.textContent = data.code; el.claim.hidden = false; }
     const q = state.quote;
     el.resume.innerHTML = "";
     const rows = [
@@ -335,7 +314,8 @@
 
   const LABEL = {
     quoting: "Cotizando", measuring: "Cotizando", quoted: "Por confirmar",
-    queued: "En fila", printing: "Imprimiendo", done: "Listo para recoger", error: "Necesita revisión",
+    held: "Esperando el código", queued: "En fila", printing: "Imprimiendo",
+    done: "Listo para recoger", error: "Necesita revisión",
   };
   function setStatus(s) {
     el.statusText.textContent = LABEL[s] || "En fila";
@@ -375,11 +355,6 @@
     render();
   });
   el.notes.addEventListener("input", () => render());
-  el.pin.addEventListener("input", () => {
-    const limpio = el.pin.value.replace(/\D/g, "").slice(0, 4);
-    if (el.pin.value !== limpio) el.pin.value = limpio;
-    render();
-  });
   el.minus.addEventListener("click", () => { el.copies.value = Math.max(1, (parseInt(el.copies.value, 10) || 1) - 1); render(); });
   el.plus.addEventListener("click", () => { el.copies.value = Math.min(200, (parseInt(el.copies.value, 10) || 1) + 1); render(); });
   el.sendBtn.addEventListener("click", submit);
@@ -393,7 +368,6 @@
     el.needsNotes.checked = false;
     el.notesWrap.hidden = true;
     el.copies.value = "1";
-    el.pin.value = "";
     document.querySelector('input[name="mode"][value="bw"]').checked = true;
     render();
     window.scrollTo({ top: 0 });
@@ -406,5 +380,4 @@
   });
 
   loadPrices();
-  loadPinMode();
 })();

@@ -6,7 +6,7 @@ export async function onRequestGet({ params, env }) {
 
   const row = await env.DB.prepare(
     `SELECT folio, created_at, status, mode, copies, pages, pages_verified, total,
-            printed_at, quote_json
+            printed_at, quote_json, claim_code
        FROM jobs WHERE folio = ?`
   ).bind(folio).first();
 
@@ -21,6 +21,7 @@ export async function onRequestGet({ params, env }) {
     pages: row.pages_verified || row.pages,
     total: row.total,
     quote: row.quote_json ? JSON.parse(row.quote_json) : null,
+    code: row.claim_code || null,
     ready_at: row.status === "done" ? row.printed_at : null,
   });
 }

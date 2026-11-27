@@ -17,12 +17,14 @@ export async function onRequestPost({ request, env }) {
 
   const folio = String(body.folio || "").toUpperCase();
   const action = String(body.action || "");
-  if (!/^[0-9]{6}-[A-Z2-9]{4}$/.test(folio)) return bad("Folio inválido.");
+  // Liberar puede venir con el código del cliente y sin folio; el resto sí lo necesita.
+  const porCodigo = action === "release" && String(body.code || "").trim().length > 0;
+  if (!porCodigo && !/^[0-9]{6}-[A-Z2-9]{4}$/.test(folio)) return bad("Folio inválido.");
 
-  const row = await env.DB.prepare(
+  const row = porCodigo ? null : await env.DB.prepare(
     `SELECT status, printed_at FROM jobs WHERE folio = ?`
   ).bind(folio).first();
-  if (!row) return bad("No encontramos ese folio.", 404);
+  if (!porCodigo && !row) return bad("No encontramos ese folio.", 404);
 
   const now = new Date().toISOString();
 
@@ -54,6 +56,38 @@ export async function onRequestPost({ request, env }) {
 
     console.log(JSON.stringify({ evt: "job_requeued", folio, from: row.status }));
     return json({ ok: true, folio, status: "queued" });
+  }
+
+  if (action === "release") {
+    // El cliente dicta su código de 4 dígitos: ese es el permiso para imprimir.
+    const code = String(body.code || "").replace(/\D/g, "").slice(0, 4);
+    const porCodigo = code.length === 4;
+    if (!porCodigo && !body.folio) return bad("Escribe el código de 4 dígitos.", 400);
+
+    const objetivo = porCodigo
+      ? `SELECT folio, status, total FROM jobs WHERE claim_code = ? AND status IN ('held','quoted') ORDER BY created_at LIMIT 1`
+      : `SELECT folio, status, total FROM jobs WHERE folio = ? AND status IN ('held','quoted')`;
+    const arg = porCodigo ? code : String(body.folio).toUpperCase();
+    const job = await env.DB.prepare(objetivo).bind(arg).first();
+
+    if (!job) {
+      if (porCodigo) {
+        const otro = await env.DB.prepare(
+          `SELECT folio, status FROM jobs WHERE claim_code = ? ORDER BY created_at DESC LIMIT 1`
+        ).bind(code).first();
+        if (otro) return json({ ok: true, already: true, folio: otro.folio, status: otro.status });
+        return bad("Ningún pedido esperando con ese código.", 404);
+      }
+      return bad("Ese pedido ya no está esperando.", 409);
+    }
+
+    await env.DB.prepare(
+      `UPDATE jobs SET status = 'queued', claimed_at = NULL
+        WHERE folio = ? AND status IN ('held','quoted')`
+    ).bind(job.folio).run();
+
+    console.log(JSON.stringify({ evt: "job_released", folio: job.folio, por: porCodigo ? "codigo" : "folio" }));
+    return json({ ok: true, folio: job.folio, status: "queued", total: job.total });
   }
 
   return bad(`Acción desconocida: ${action || "(vacía)"}`);

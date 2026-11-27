@@ -1,6 +1,5 @@
 import { PRICES } from "../_prices.js";
-import { json, bad, makeFolio, r2Key, clientIp } from "../_lib.js";
-import { checkPin, pinMode, pinRateOk, pinRateFail } from "../_pin.js";
+import { json, bad, makeFolio, makeClaimCode, r2Key, clientIp } from "../_lib.js";
 
 
 const TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
@@ -36,19 +35,16 @@ export async function onRequestPost({ request, env }) {
     if (!files.length) return bad("No llegó ningún archivo.");
     if (files.length > PRICES.max_files) return bad(`Máximo ${PRICES.max_files} archivos por pedido.`);
 
-    // Filtro de presencialidad: el QR y la dirección se pueden compartir, el
-    // código del mostrador no. Sin código válido no se guarda nada y, por lo
-    // tanto, nada se imprime.
-    const ip = clientIp(request);
-    if ((await pinMode(env)) !== "abierto") {
-      if (!(await pinRateOk(env, ip))) {
-        return bad("Demasiados intentos con el código. Pídelo en el mostrador.", 429);
-      }
-      const pin = String(form.get("pin") || "");
-      if (!(await checkPin(env, pin))) {
-        await pinRateFail(env, ip);
-        return bad("Ese código no es el de ahora. Está en la pantalla del mostrador.", 403);
-      }
+    // Filtro de presencialidad: nada se imprime hasta que alguien dicta en el
+    // mostrador el código de este pedido. Un archivo mandado desde fuera se
+    // queda esperando y no gasta papel.
+    let claimCode = makeClaimCode();
+    for (let i = 0; i < 6; i++) {
+      const choque = await env.DB.prepare(
+        `SELECT 1 AS x FROM jobs WHERE claim_code = ? AND status NOT IN ('done', 'error') LIMIT 1`
+      ).bind(claimCode).first();
+      if (!choque) break;
+      claimCode = makeClaimCode();
     }
 
     let bytes = 0;
@@ -88,15 +84,17 @@ export async function onRequestPost({ request, env }) {
     }
 
     await env.DB.prepare(
-      `INSERT INTO jobs (folio, created_at, status, mode, copies, pages, total, customer, phone, notes, files_json, plan_json, review)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO jobs (folio, created_at, status, mode, copies, pages, total, customer, phone, notes,
+                        files_json, plan_json, review, claim_code)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(folio, createdAt, review ? "review" : "quoting", mode, copies, pages, customer, phone, notes,
-           JSON.stringify(stored), JSON.stringify(plan), review).run();
+           JSON.stringify(stored), JSON.stringify(plan), review, claimCode).run();
 
     console.log(JSON.stringify({ evt: "job_created", folio, files: stored.length, pages, bytes, ip: clientIp(request) }));
 
     return json({
       folio,
+      code: claimCode,
       status: review ? "review" : "quoting",
       review,
       mode, copies, pages,

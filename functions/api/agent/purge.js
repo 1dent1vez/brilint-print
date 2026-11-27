@@ -26,7 +26,7 @@ export async function onRequestPost({ request, env }) {
           WHERE files_json IS NOT NULL AND files_json != '[]' AND purged_at IS NULL
             AND (
               (status IN ('done','error') AND COALESCE(printed_at, created_at) < ?)
-              OR (status IN ('quoting','measuring','quoted','review','reviewing','queued') AND created_at < ?)
+              OR (status IN ('quoting','measuring','quoted','review','reviewing','held','queued') AND created_at < ?)
             )`
       ).bind(doneCut, oldCut).all();
 

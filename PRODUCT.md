@@ -35,6 +35,7 @@ No es una app de impresión ni un marketplace: es la puerta de entrada del mostr
 
 Confirmado:
 - Subir uno o varios archivos (PDF, JPG, PNG), elegir color o blanco y negro, indicar número de copias, dejar notas libres y ver el total antes de enviar.
+- **Nada se imprime sin una persona enfrente.** Cada pedido nace con un código de 4 dígitos que solo ve el cliente. Al confirmar el total, el pedido queda «esperando el código»: no entra a la impresora hasta que alguien lo dicta en voz alta y el mostrador lo teclea en la caja. Si el archivo llega de fuera, se cotiza pero se queda quieto y no gasta papel.
 - El pedido entra a una cola; la laptop lo recoge, lo imprime y lo marca como listo.
 - NFC y QR impresos en el mostrador apuntan a esta misma página.
 - Sin pago en línea en esta versión. Sin cuentas de usuario. Sin app.

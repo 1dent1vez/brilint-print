@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   files_json      TEXT NOT NULL,
   plan_json       TEXT,                              -- interpretación de la nota (reservado)
   review          INTEGER NOT NULL DEFAULT 0,        -- 1 = pasa por el mostrador antes de imprimir
+  claim_code      TEXT,                              -- 4 dígitos que el cliente dicta para imprimir
   pages_verified  INTEGER,                           -- páginas reales, medidas por el agente
   quote_json      TEXT,                              -- desglose por nivel medido
   claimed_at      TEXT,                              -- el agente tomó el pedido
@@ -29,3 +30,4 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_code ON jobs (claim_code);
