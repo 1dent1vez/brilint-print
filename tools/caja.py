@@ -90,6 +90,14 @@ PAGE = """<!DOCTYPE html>
   .printer .sp{flex:1}
   .printer b{display:block;font-size:14px}
   .printer small{color:var(--gray);font-size:12px}
+  .codebox{display:flex;align-items:center;gap:18px;border:1px solid var(--line);
+           border-radius:10px;padding:14px 20px;background:var(--panel)}
+  .codebox.abierto{border-color:#6b4a12;background:#150f07}
+  .codebox small{display:block;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--gray)}
+  .codebox .code{font:700 46px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+                 letter-spacing:.18em;color:var(--lime);font-variant-numeric:tabular-nums}
+  .codebox.abierto .code{color:var(--red)}
+  .codebox .sp{flex:1}
   footer{position:fixed;left:0;right:0;bottom:0;padding:10px 24px;background:var(--black);
          border-top:1px solid var(--line);color:var(--gray);font-size:12px;display:flex;gap:16px}
   .toast{position:fixed;bottom:52px;left:50%;transform:translateX(-50%);background:var(--lime);
@@ -105,6 +113,15 @@ PAGE = """<!DOCTYPE html>
   <button onclick="cargar();cargarImpresora()">Actualizar</button>
 </header>
 <main>
+  <section class="codebox" id="codebox">
+    <div>
+      <small>Código del mostrador</small>
+      <div class="code" id="codigo">----</div>
+    </div>
+    <div><small id="codeleft">—</small></div>
+    <span class="sp"></span>
+    <button class="act" id="modobtn" onclick="cambiarModo()">Aceptar envíos de fuera</button>
+  </section>
   <section class="printer" id="imp">
     <span class="pdot"></span>
     <div><b id="pname">Impresora</b><small id="pmeta">consultando…</small></div>
@@ -242,9 +259,52 @@ async function accion(folio,accion){
     setTimeout(()=>{cargar();cargarImpresora();},800);
   }catch(e){toast("Error: "+e.message,true);}
 }
-cargar();cargarImpresora();
+function mmss(s){s=Math.max(0,s|0);return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;}
+let PIN=null,pinLeft=0;
+async function cargarCodigo(){
+  try{
+    const r=await fetch("/api/pin");const d=await r.json();
+    PIN=d; pinLeft=d.expires_in||0;
+    const abierto=d.modo==="abierto";
+    document.getElementById("codebox").classList.toggle("abierto",abierto);
+    document.getElementById("codigo").textContent=abierto?"ABIERTO":(d.code||"----");
+    document.getElementById("codeleft").textContent=abierto
+      ? "aceptando envíos de fuera"
+      : `cambia en ${mmss(pinLeft)}`;
+    document.getElementById("modobtn").textContent=abierto
+      ? "Cerrar envíos de fuera"
+      : "Aceptar envíos de fuera (1 h)";
+  }catch(e){
+    const el=document.getElementById("codeleft");
+    if(el) el.textContent="sin código · revisa la conexión";
+  }
+}
+async function cambiarModo(){
+  const abierto=PIN&&PIN.modo==="abierto";
+  const msg=abierto
+    ? "Se vuelve a pedir el código a todos. ¿Sigo?"
+    : "Durante 1 hora se van a poder mandar pedidos desde fuera del local y se van a imprimir. ¿Sigo?";
+  if(!confirm(msg))return;
+  try{
+    const r=await fetch("/accion",{method:"POST",headers:{"content-type":"application/json"},
+      body:JSON.stringify({accion:"modo-fuera",modo:abierto?"cerrado":"abierto"})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||"falló");
+    toast(abierto?"Se vuelve a pedir el código":"Aceptando envíos de fuera por 1 hora");
+    setTimeout(()=>{cargarCodigo();cargar();},600);
+  }catch(e){toast("Error: "+e.message,true);}
+}
+cargar();cargarImpresora();cargarCodigo();
 setInterval(()=>{cargar();},5000);
 setInterval(()=>{cargarImpresora();},8000);
+setInterval(()=>{cargarCodigo();},20000);
+setInterval(()=>{
+  if(!PIN||PIN.modo==="abierto"||pinLeft<=0)return;
+  pinLeft--;
+  const el=document.getElementById("codeleft");
+  if(el) el.textContent=`cambia en ${mmss(pinLeft)}`;
+  if(pinLeft<=0) cargarCodigo();
+},1000);
 </script></body></html>
 """
 
@@ -358,6 +418,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, impresora_info())
             except Exception as e:  # noqa: BLE001
                 return self._json(500, {"error": str(e)[:160]})
+        if self.path == "/api/pin":
+            code, data = api("/api/agent/code")
+            return self._json(code if code < 500 else 502, data)
         if self.path.startswith("/api/pedidos"):
             code, data = api("/api/agent/jobs?limit=14")
             return self._json(code if code < 500 else 502, data)
@@ -401,6 +464,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json(500, {"error": str(e)[:160]})
             return self._json(500 if res.get("error") else 200, res)
+        if accion == "modo-fuera":
+            modo = "abierto" if payload.get("modo") == "abierto" else "cerrado"
+            code, data = api("/api/agent/code", "POST", {"modo": modo, "minutos": 60})
+            return self._json(code, data)
         return self._json(400, {"error": f"acción desconocida: {accion}"})
 
 

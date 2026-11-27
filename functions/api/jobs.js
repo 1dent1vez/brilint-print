@@ -1,5 +1,6 @@
 import { PRICES } from "../_prices.js";
 import { json, bad, makeFolio, r2Key, clientIp } from "../_lib.js";
+import { checkPin, pinMode, pinRateOk, pinRateFail } from "../_pin.js";
 
 
 const TYPES = new Set(["application/pdf", "image/jpeg", "image/png"]);
@@ -34,6 +35,21 @@ export async function onRequestPost({ request, env }) {
     const files = form.getAll("files").filter((f) => typeof f === "object" && f && "arrayBuffer" in f);
     if (!files.length) return bad("No llegó ningún archivo.");
     if (files.length > PRICES.max_files) return bad(`Máximo ${PRICES.max_files} archivos por pedido.`);
+
+    // Filtro de presencialidad: el QR y la dirección se pueden compartir, el
+    // código del mostrador no. Sin código válido no se guarda nada y, por lo
+    // tanto, nada se imprime.
+    const ip = clientIp(request);
+    if ((await pinMode(env)) !== "abierto") {
+      if (!(await pinRateOk(env, ip))) {
+        return bad("Demasiados intentos con el código. Pídelo en el mostrador.", 429);
+      }
+      const pin = String(form.get("pin") || "");
+      if (!(await checkPin(env, pin))) {
+        await pinRateFail(env, ip);
+        return bad("Ese código no es el de ahora. Está en la pantalla del mostrador.", 403);
+      }
+    }
 
     let bytes = 0;
     for (const f of files) {

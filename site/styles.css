@@ -266,6 +266,19 @@ textarea{resize:vertical;min-height:90px}
 .q-meta dd{margin:0;text-align:right;color:var(--white);font-variant-numeric:tabular-nums}
 #quote-ticket .cta{margin-top:20px}
 
+/* Código del mostrador: se teclea con el pulgar, de pie, de reojo */
+.pin{
+  width:100%;max-width:220px;padding:14px 16px;margin-top:6px;
+  background:var(--black);color:var(--white);
+  border:1px solid var(--line-strong);border-radius:10px;
+  font:600 30px/1 var(--reading);letter-spacing:.34em;font-variant-numeric:tabular-nums;
+  text-align:center;
+}
+.pin::placeholder{color:var(--line-strong);letter-spacing:.34em}
+.pin:focus-visible{outline:2px solid var(--lime);outline-offset:2px;border-color:var(--lime)}
+#pin-block.is-open .block-head h2{color:var(--gray)}
+#pin-block.is-open .help{color:var(--lime)}
+
 @media (prefers-reduced-motion:reduce){
   *{transition:none!important;animation:none!important}
 }

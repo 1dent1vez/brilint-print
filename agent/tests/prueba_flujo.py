@@ -59,11 +59,31 @@ class Cliente:
     def agente(self, path: str, body: dict | None = None) -> tuple[int, dict]:
         return self._req(path, "POST", body, headers={"x-agent-token": self.token})
 
-    def crear(self, notas: str, review: bool = True, copias: int = 1) -> dict:
+    def codigo(self) -> str:
+        code, d = self._req("/api/agent/code", headers={"x-agent-token": self.token})
+        if code != 200 or not d.get("code"):
+            raise RuntimeError(f"no pude leer el código del mostrador: {code} {d}")
+        return d["code"]
+
+    def crear_intento(self, notas: str = "", review: bool = False, copias: int = 1,
+                      pin: str | None = "auto") -> tuple[int, dict]:
+        """Como crear(), pero devuelve el código HTTP en vez de lanzar."""
+        try:
+            return 200, self.crear(notas, review=review, copias=copias, pin=pin)
+        except RuntimeError as e:
+            msg = str(e)
+            code = int(msg.split(":")[1].split()[0]) if ":" in msg else 0
+            return code, {"error": msg}
+
+    def crear(self, notas: str, review: bool = True, copias: int = 1, pin: str | None = "auto") -> dict:
         b = "----prueba" + uuid.uuid4().hex
         partes = []
         campos = {"mode": "bw", "copies": str(copias), "pages": json.dumps([1]),
                   "notes": notas, "customer": "Prueba", "phone": "5555555555"}
+        if pin == "auto":
+            pin = self.codigo()
+        if pin:
+            campos["pin"] = pin
         if review:
             campos["review"] = "1"
         for k, v in campos.items():
@@ -85,6 +105,28 @@ def main() -> int:
     ap.add_argument("--token", default="token-de-prueba")
     args = ap.parse_args()
     c = Cliente(args.api, args.token)
+
+    print("\n0 · Filtro de presencialidad: sin código del mostrador no entra nada")
+    code, d = c.crear_intento(pin="0000")
+    # 0000 podría ser el código real por casualidad: se prueba con uno imposible
+    if code == 200:
+        code, d = c.crear_intento(pin="")
+    check("sin el código correcto no se registra", code == 403, f"{code} {d}")
+    check("el mensaje manda al mostrador", "mostrador" in str(d.get("error", "")), str(d.get("error")))
+
+    code, d = c.crear_intento()
+    check("con el código de la caja sí entra", code == 200, f"{code} {d}")
+    if code == 200:
+        c.agente("/api/agent/manual", {"folio": d["folio"], "action": "printed_here"})
+
+    c.agente("/api/agent/code", {"modo": "abierto"})
+    code, d = c.crear_intento(pin=None)
+    check("en modo abierto entra sin código", code == 200, f"{code} {d}")
+    if code == 200:
+        c.agente("/api/agent/manual", {"folio": d["folio"], "action": "printed_here"})
+    c.agente("/api/agent/code", {"modo": "cerrado"})
+    code, d = c.crear_intento(pin=None)
+    check("al cerrar vuelve a pedir el código", code == 403, f"{code} {d}")
 
     print("\n1 · Pedido con indicaciones: el mostrador lo imprime a mano")
     j1 = c.crear("Imagen de 10x10 en hoja opalina")

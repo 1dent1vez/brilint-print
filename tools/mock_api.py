@@ -88,6 +88,7 @@ def parse_multipart(body: bytes, boundary: bytes) -> list[dict]:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "mock-pages/1.0"
+    PIN = "1234"      # código del mostrador en el mock: siempre el mismo
 
     def log_message(self, fmt, *args):  # silencioso
         pass
@@ -128,6 +129,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({k: job.get(k) for k in
                                    ("folio", "created_at", "status", "mode", "copies",
                                     "pages", "pages_verified", "total", "printed_at", "quote")})
+
+        if path == "/api/pin":
+            db = load_db()
+            modo = db.get("pin_modo", "cerrado")
+            return self.send_json({"modo": modo, "pide_codigo": modo != "abierto"})
+
+        if path == "/api/agent/code":
+            if not self.agent_ok():
+                return self.send_json({"error": "No autorizado."}, 401)
+            db = load_db()
+            return self.send_json({"code": self.PIN, "expires_in": 300, "rotacion_s": 300,
+                                   "modo": db.get("pin_modo", "cerrado")})
 
         if path == "/api/agent/jobs":
             if not self.agent_ok():
@@ -232,6 +245,15 @@ class Handler(BaseHTTPRequestHandler):
                 job["status"] = "queued"
                 save_db(db)
             return self.send_json({"folio": job["folio"], "status": job["status"], "total": job["total"]})
+        if u.path == "/api/agent/code":
+            if not self.agent_ok():
+                return self.send_json({"error": "No autorizado."}, 401)
+            payload = json.loads(body or b"{}")
+            db = load_db()
+            db["pin_modo"] = "abierto" if payload.get("modo") == "abierto" else "cerrado"
+            save_db(db)
+            return self.send_json({"ok": True, "modo": db["pin_modo"], "code": self.PIN,
+                                   "expires_in": 300, "rotacion_s": 300})
         if u.path == "/api/agent/release":
             if not self.agent_ok():
                 return self.send_json({"error": "No autorizado."}, 401)
@@ -329,6 +351,12 @@ class Handler(BaseHTTPRequestHandler):
         total_bytes = sum(len(f["data"]) for f in files)
         if total_bytes > PRICES["max_mb"] * 1024 * 1024:
             return self.send_json({"error": "El pedido pasa del límite."}, 413)
+
+        # Igual que en producción: sin código del mostrador no se guarda nada.
+        if load_db().get("pin_modo", "cerrado") != "abierto":
+            if fields.get("pin", "").strip() != self.PIN:
+                return self.send_json(
+                    {"error": "Ese código no es el de ahora. Está en la pantalla del mostrador."}, 403)
 
         mode = fields.get("mode", "bw")
         copies = int(fields.get("copies", 1))

@@ -1,3 +1,8 @@
+# Todo el texto va con LF, sin importar el core.autocrlf de la máquina.
+# Con CRLF un shebang (`#!/usr/bin/env python3\r`) deja de funcionar y los
+# scripts del agente y de las pruebas fallan con "No existe el fichero".
+* text=auto eol=lf
+
 # Preservar los bytes de documentos y recursos binarios
 *.pdf binary
 *.png binary
