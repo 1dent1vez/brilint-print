@@ -44,3 +44,32 @@ export function isAgent(request, env) {
 export function clientIp(request) {
   return request.headers.get("cf-connecting-ip") || "0.0.0.0";
 }
+
+// Freno para el código del cliente: 3 fallos y se cierra 5 minutos. Sin esto,
+// 10 000 combinaciones se prueban a mano en un rato.
+const MAX_FALLOS = 3;
+const BLOQUEO_S = 300;
+
+export async function bloqueoActivo(env, tipo) {
+  const hasta = await env.BUCKET.get(`lock:${tipo}`);
+  const restante = hasta ? Math.ceil((new Date(hasta).getTime() - Date.now()) / 1000) : 0;
+  return restante > 0 ? restante : 0;
+}
+
+export async function fallo(env, tipo) {
+  if ((await bloqueoActivo(env, tipo)) > 0) return { bloqueado: true, restante: await bloqueoActivo(env, tipo) };
+  const k = `fails:${tipo}`;
+  const n = (Number(await env.BUCKET.get(k)) || 0) + 1;
+  if (n >= MAX_FALLOS) {
+    await env.BUCKET.put(`lock:${tipo}`, new Date(Date.now() + BLOQUEO_S * 1000).toISOString(),
+                        { expirationTtl: BLOQUEO_S + 60 });
+    await env.BUCKET.delete(k);
+    return { bloqueado: true, restante: BLOQUEO_S, fallos: n };
+  }
+  await env.BUCKET.put(k, String(n), { expirationTtl: BLOQUEO_S });
+  return { bloqueado: false, restante: 0, fallos: n, quedan: MAX_FALLOS - n };
+}
+
+export async function acierto(env, tipo) {
+  await env.BUCKET.delete(`fails:${tipo}`);
+}

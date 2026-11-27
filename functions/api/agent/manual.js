@@ -1,4 +1,4 @@
-import { json, bad, isAgent } from "../../_lib.js";
+import { json, bad, isAgent, bloqueoActivo, fallo, acierto } from "../../_lib.js";
 
 // Lo que pasa en el mostrador cuando el pedido no lo saca la app.
 //
@@ -59,6 +59,12 @@ export async function onRequestPost({ request, env }) {
   }
 
   if (action === "release") {
+    // Antes de nada: ¿está bloqueado por intentos fallidos?
+    const bloqueo = await bloqueoActivo(env, "codigo");
+    if (bloqueo > 0) {
+      return json({ error: `Bloqueado por intentos fallidos. Espera ${Math.ceil(bloqueo / 60)} min.`,
+                    bloqueado_s: bloqueo }, 429);
+    }
     // El cliente dicta su código de 4 dígitos: ese es el permiso para imprimir.
     const code = String(body.code || "").replace(/\D/g, "").slice(0, 4);
     const porCodigo = code.length === 4;
@@ -76,7 +82,13 @@ export async function onRequestPost({ request, env }) {
           `SELECT folio, status FROM jobs WHERE claim_code = ? ORDER BY created_at DESC LIMIT 1`
         ).bind(code).first();
         if (otro) return json({ ok: true, already: true, folio: otro.folio, status: otro.status });
-        return bad("Ningún pedido esperando con ese código.", 404);
+        const f = await fallo(env, "codigo");
+        if (f.bloqueado) {
+          return json({ error: `Código incorrecto ${f.fallos || 3} veces: bloqueado ${Math.ceil(f.restante / 60)} min.`,
+                        bloqueado_s: f.restante }, 429);
+        }
+        return json({ error: `Ningún pedido esperando con ese código. Te quedan ${f.quedan} intentos.`,
+                      quedan: f.quedan }, 404);
       }
       return bad("Ese pedido ya no está esperando.", 409);
     }
@@ -86,6 +98,7 @@ export async function onRequestPost({ request, env }) {
         WHERE folio = ? AND status IN ('held','quoted')`
     ).bind(job.folio).run();
 
+    await acierto(env, "codigo");
     console.log(JSON.stringify({ evt: "job_released", folio: job.folio, por: porCodigo ? "codigo" : "folio" }));
     return json({ ok: true, folio: job.folio, status: "queued", total: job.total });
   }

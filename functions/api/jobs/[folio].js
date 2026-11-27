@@ -22,6 +22,7 @@ export async function onRequestGet({ params, env }) {
     total: row.total,
     quote: row.quote_json ? JSON.parse(row.quote_json) : null,
     code: row.claim_code || null,
+    nfc: Boolean(env.NFC_TAG_ID),
     ready_at: row.status === "done" ? row.printed_at : null,
   });
 }

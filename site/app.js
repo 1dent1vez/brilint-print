@@ -29,7 +29,7 @@
     quoteSub: $("quote-sub"), qTotal: $("q-total"), qLines: $("q-lines"), qMeta: $("q-meta"),
     confirm: $("confirm"), quoteErr: $("quote-err"), quoteWait: $("quote-wait"),
     folio: $("folio"), status: $("status"), statusText: $("status-text"), resume: $("resume"),
-    claim: $("claim"), claimCode: $("claim-code"),
+    claim: $("claim"), claimCode: $("claim-code"), tap: $("tap"), tapMsg: $("tap-msg"),
     again: $("again"), maxmb: $("maxmb"),
   };
 
@@ -295,7 +295,19 @@
     screen("done");
     el.folio.textContent = data.folio || state.folio;
     setStatus(data.status || "held");
-    if (data.code && el.claim) { el.claimCode.textContent = data.code; el.claim.hidden = false; }
+    if (data.code && el.claim) {
+      el.claimCode.textContent = data.code;
+      el.claim.hidden = false;
+      // Con Web NFC (Android) basta acercar el teléfono a la etiqueta; en
+      // iPhone el botón no aparece y el cliente dicta el código.
+      if ("NDEFReader" in window && data.status !== "done") {
+        // Solo si el mostrador ya registró su etiqueta; si no, no se muestra nada.
+        fetch(`/api/jobs/${encodeURIComponent(data.folio || state.folio)}`)
+          .then((r) => r.json())
+          .then((d) => { if (d.nfc) el.tap.hidden = false; })
+          .catch(() => {});
+      }
+    }
     const q = state.quote;
     el.resume.innerHTML = "";
     const rows = [
@@ -320,6 +332,40 @@
   function setStatus(s) {
     el.statusText.textContent = LABEL[s] || "En fila";
     el.status.classList.toggle("done", s === "done");
+  }
+
+  let tapLector = null;
+  async function tocarEtiqueta() {
+    if (!("NDEFReader" in window) || !state.folio) return;
+    el.tap.disabled = true;
+    el.tapMsg.hidden = false;
+    el.tapMsg.textContent = "Acerca el teléfono a la etiqueta del mostrador…";
+    try {
+      tapLector = new NDEFReader();
+      await tapLector.scan();          // pide permiso y empieza a escuchar
+      tapLector.onreading = async (e) => {
+        el.tapMsg.textContent = "Etiqueta leída, mandando…";
+        try {
+          const r = await fetch(`/api/jobs/${encodeURIComponent(state.folio)}/tap`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ tag: e.serialNumber || "" }),
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error || "No se pudo liberar.");
+          el.tapMsg.textContent = "¡Listo! Tu pedido va a la impresora.";
+          el.tap.hidden = true;
+          setStatus(d.status || "queued");
+        } catch (err) {
+          el.tapMsg.textContent = err.message || "No se pudo liberar.";
+          el.tap.disabled = false;
+        }
+      };
+    } catch (e) {
+      el.tapMsg.textContent = e.name === "NotAllowedError"
+        ? "Hace falta permiso de NFC. Mientras tanto, dicta el código."
+        : "No pude usar el NFC de este teléfono. Dicta el código.";
+      el.tap.disabled = false;
+    }
   }
 
   function startStatusPolling() {
@@ -358,6 +404,7 @@
   el.minus.addEventListener("click", () => { el.copies.value = Math.max(1, (parseInt(el.copies.value, 10) || 1) - 1); render(); });
   el.plus.addEventListener("click", () => { el.copies.value = Math.min(200, (parseInt(el.copies.value, 10) || 1) + 1); render(); });
   el.sendBtn.addEventListener("click", submit);
+  el.tap && el.tap.addEventListener("click", tocarEtiqueta);
   el.confirm.addEventListener("click", confirm);
   el.again.addEventListener("click", () => {
     clearInterval(state.poll);
