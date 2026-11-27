@@ -30,6 +30,7 @@
     confirm: $("confirm"), quoteErr: $("quote-err"), quoteWait: $("quote-wait"),
     folio: $("folio"), status: $("status"), statusText: $("status-text"), resume: $("resume"),
     claim: $("claim"), claimCode: $("claim-code"), tap: $("tap"), tapMsg: $("tap-msg"),
+    nfc: $("nfc"), tapText: $("tap-text"),
     again: $("again"), maxmb: $("maxmb"),
   };
 
@@ -313,7 +314,7 @@
         fetch(`/api/jobs/${encodeURIComponent(data.folio || state.folio)}`)
           .then((r) => r.json())
           .then((d) => {
-            if (d.nfc) el.tap.hidden = false;
+            if (d.nfc) { el.nfc.hidden = false; el.tap.hidden = false; }
             else { el.tapMsg.hidden = false; el.tapMsg.textContent = "El mostrador todavía no registra su etiqueta: dicta el código."; }
           })
           .catch(() => {});
@@ -346,24 +347,32 @@
   }
 
   let tapLector = null;
+  function nfcEstado(estado, texto) {
+    if (!el.nfc) return;
+    el.nfc.classList.remove("is-listening", "is-ok", "is-error");
+    if (estado) el.nfc.classList.add("is-" + estado);
+    if (texto) { el.tapText.textContent = texto; el.tapMsg.textContent = texto; }
+  }
   async function tocarEtiqueta() {
     if (!("NDEFReader" in window) || !state.folio) return;
     el.tap.disabled = true;
     el.tapMsg.hidden = false;
     el.tapMsg.textContent = "Acerca el teléfono al acrílico del mostrador…";
     try {
+      nfcEstado("listening", "Acerca el teléfono al acrílico…");
+      el.tapMsg.hidden = true;
       tapLector = new NDEFReader();
       await tapLector.scan();          // pide permiso y empieza a escuchar
       if (!("onreading" in tapLector)) return;
       // si nadie acerca la etiqueta en 40 s, se dice en vez de quedarse mudo
       setTimeout(() => {
         if (el.tap.disabled) {
-          el.tapMsg.textContent = "No se leyó ninguna etiqueta. Acércala al reverso del teléfono o dicta el código.";
+          nfcEstado("error", "No se leyó la etiqueta. Acércala al reverso del teléfono o dicta el código.");
           el.tap.disabled = false;
         }
       }, 40000);
       tapLector.onreading = async (e) => {
-        el.tapMsg.textContent = "Etiqueta leída, mandando…";
+        nfcEstado("ok", "¡Etiqueta leída! Mandando tu pedido…");
         try {
           const r = await fetch(`/api/jobs/${encodeURIComponent(state.folio)}/tap`, {
             method: "POST", headers: { "content-type": "application/json" },
@@ -371,18 +380,18 @@
           });
           const d = await r.json();
           if (!r.ok) throw new Error(d.error || "No se pudo liberar.");
-          el.tapMsg.textContent = "¡Listo! Tu pedido va a la impresora.";
+          nfcEstado("ok", "¡Listo! Tu pedido va a la impresora.");
           el.tap.hidden = true;
           setStatus(d.status || "queued");
         } catch (err) {
-          el.tapMsg.textContent = err.message || "No se pudo liberar.";
+          nfcEstado("error", err.message || "No se pudo liberar.");
           el.tap.disabled = false;
         }
       };
     } catch (e) {
-      el.tapMsg.textContent = e.name === "NotAllowedError"
-        ? "Hace falta permiso de NFC. Mientras tanto, dicta el código."
-        : "No pude usar el NFC de este teléfono. Dicta el código.";
+      nfcEstado("error", e.name === "NotAllowedError"
+        ? "Dale permiso de NFC a Chrome y vuelve a tocar."
+        : "No pude usar el NFC de este teléfono. Dicta el código.");
       el.tap.disabled = false;
     }
   }

@@ -163,8 +163,20 @@
         <p class="label">Dile este código al mostrador</p>
         <p class="claim-code" id="claim-code">—</p>
         <p class="help">En cuanto lo tecleen, tu pedido se imprime.</p>
-        <button class="cta ghost" id="tap" hidden>Acerca el teléfono al acrílico del mostrador</button>
-        <p class="fine" id="tap-msg" hidden></p>
+        <div class="nfc" id="nfc" hidden>
+          <button class="nfc-hit" id="tap" type="button">
+            <span class="nfc-waves" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="nfc-phone" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor"
+                   stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="7" y="2.5" width="10" height="19" rx="2.6"/>
+                <path d="M10.5 5.5h3"/>
+              </svg>
+            </span>
+            <span class="nfc-text" id="tap-text">Toca aquí y acerca el teléfono al acrílico</span>
+          </button>
+          <p class="nfc-msg" id="tap-msg" hidden></p>
+        </div>
       </div>
       <dl class="resume" id="resume"></dl>
     </div>
