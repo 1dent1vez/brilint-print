@@ -38,11 +38,14 @@ export async function onRequestPost({ request, env }) {
     // Filtro de presencialidad: nada se imprime hasta que alguien dicta en el
     // mostrador el código de este pedido. Un archivo mandado desde fuera se
     // queda esperando y no gasta papel.
+    // Único entre los abiertos Y entre los de las últimas 24 h: un código de
+    // un pedido ya cerrado no puede "robarle" la liberación a uno nuevo.
     let claimCode = makeClaimCode();
+    const desde = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     for (let i = 0; i < 6; i++) {
       const choque = await env.DB.prepare(
-        `SELECT 1 AS x FROM jobs WHERE claim_code = ? AND status NOT IN ('done', 'error') LIMIT 1`
-      ).bind(claimCode).first();
+        `SELECT 1 AS x FROM jobs WHERE claim_code = ? AND created_at > ? LIMIT 1`
+      ).bind(claimCode, desde).first();
       if (!choque) break;
       claimCode = makeClaimCode();
     }

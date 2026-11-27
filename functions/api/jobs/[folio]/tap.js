@@ -50,7 +50,11 @@ export async function onRequestPost({ params, env, request }) {
     await acierto(env, "nfc");
     return json({ ok: true, already: true, folio, status: row.status });
   }
-  if (!["held", "quoted", "review", "reviewing"].includes(row.status)) {
+  if (["review", "reviewing"].includes(row.status)) {
+    // Todavía lo está ajustando el mostrador: no se puede soltar por NFC.
+    return bad("El mostrador todavía está revisando tu pedido.", 409);
+  }
+  if (row.status !== "held" && row.status !== "quoted") {
     return bad(`Este pedido está en ${row.status}.`, 409);
   }
 

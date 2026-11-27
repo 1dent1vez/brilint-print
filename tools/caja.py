@@ -257,7 +257,8 @@ function copiar(f){navigator.clipboard.writeText(f).then(()=>toast("Folio copiad
 async function accion(folio,accion){
   const etiqueta={liberar:"Liberado · midiendo",imprimir:"Confirmado · imprimiendo",
                   "ya-salio":"Cerrado · quedó como impreso","reimprimir":"De vuelta en la fila",
-                  abrir:"Carpeta abierta"}[accion]||"Hecho";
+                  abrir:"Carpeta abierta","liberar-folio":"Liberado · a imprimir",
+                  "liberar-codigo":"Liberado · a imprimir"}[accion]||"Hecho";
   try{
     const r=await fetch("/accion",{method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({folio,accion})});
